@@ -1,0 +1,1032 @@
+# AMICALE-STAR Codebase Reference Map
+
+Complete file-by-file reference guide for understanding the codebase.
+
+## Backend File Structure & Purposes
+
+### Core Application Files
+
+| File | Location | Purpose | Key Annotations |
+|------|----------|---------|-----------------|
+| `PfeApplication.java` | `tn/star/Pfe/` | Main application entry point | `@SpringBootApplication`, `@EnableAsync`, `@EnableScheduling` |
+
+### Configuration Layer (tn/star/Pfe/config/)
+
+| File | Purpose | Key Components |
+|------|---------|-----------------|
+| `SecurityConfig.java` | JWT authentication & authorization setup | JWT filter chain, password encoder, auth manager |
+| `WebConfig.java` | CORS, HTTP configuration, bean setup | CORS mapping, REST configuration |
+| `DataInitializer.java` | Initial database seeding on startup | Test data creation for development |
+
+### Controller Layer (tn/star/Pfe/controller/)
+
+**Base Controllers:**
+
+| File | Endpoint | Methods | Role Requirement |
+|------|----------|---------|-----------------|
+| `auth/AuthController.java` | `/api/auth` | login, register, refresh, forgot-password | Public |
+| `offre/OffreController.java` | `/api/offres` | create, list, search, update, delete, upload images | MEMBRE_BUREAU, ADMIN |
+| `election/ElectionController.java` | `/api/elections` | create call, submit candidacy, vote, publish results | ADMIN (create), ADHERENT (vote) |
+| `inscription/InscriptionController.java` | `/api/inscriptions` | create, confirm, refuse, list, payment | ADHERENT (create), BUREAU (confirm) |
+| `sondage/SondageController.java` | `/api/v1/sondages` | create poll, vote, close | BUREAU (create), ADHERENT (vote) |
+| `adhesion/AdhesionController.java` | `/api/adhesion` | request membership, approve, reject | ADHERENT (request), ADMIN (approve) |
+| `user/UserController.java` | `/api/utilisateurs` | profile, update, change password | AUTHENTICATED |
+| `dashboard/DashboardController.java` | `/api/dashboard` | statistics, analytics | ADMIN, BUREAU |
+| `notification/NotificationController.java` | `/api/notifications` | list, mark read, delete | AUTHENTICATED |
+| `pole/PoleController.java` | `/api/poles` | list, create | ADMIN |
+
+**Key Method Examples:**
+
+```java
+// OffreController: Create offer with image upload
+@PostMapping(value = "/creer", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+@PreAuthorize("hasAnyRole('MEMBRE_BUREAU', 'ADMIN')")
+public ResponseEntity<OffreResponse> creer(
+    @RequestPart("req") OffreRequest req,
+    @RequestPart(value = "image", required = false) MultipartFile image,
+    @RequestPart(value = "images", required = false) List<MultipartFile> images,
+    @AuthenticationPrincipal UserDetails userDetails) throws IOException
+
+// InscriptionController: Bureau confirms registration
+@PatchMapping("/confirmer/{id}")
+@PreAuthorize("hasAnyRole('MEMBRE_BUREAU', 'ADMIN')")
+public ResponseEntity<InscriptionResponse> confirmer(@PathVariable Long id)
+
+// ElectionController: Member votes
+@PostMapping("/{id}/vote")
+@PreAuthorize("hasAnyRole('ADHERENT', 'MEMBRE_BUREAU')")
+public ResponseEntity<VoteResponse> vote(
+    @PathVariable Long id,
+    @RequestBody VoteRequest request,
+    @AuthenticationPrincipal UserDetails user)
+```
+
+### Service Layer (tn/star/Pfe/service/)
+
+**Service Interfaces & Implementations:**
+
+| Package | Interface | Implementation | Key Methods |
+|---------|-----------|-----------------|-------------|
+| `auth/` | `IAuthService` | `AuthService` | login, refresh token, forgot password |
+| `offre/` | `IOffreService` | `OffreService` | create, update, list, search, manage images |
+| `election/` | `IElectionService` | `ElectionService` | create call, submit candidacy, vote, publish results |
+| `inscription/` | `IInscriptionService` | `InscriptionService` | register, confirm, refuse, process payment |
+| `sondage/` | `ISondageService` | `SondageService` | create poll, vote, get results, close |
+| `adhesion/` | `IAdhesionService` | `AdhesionService` | request membership, approve, reject |
+| `user/` | `IUserService` | `UserService` | profile management, password changes |
+| `email/` | `IEmailService` | `EmailService` | send emails (async) |
+| `notification/` | `INotificationService` | `NotificationService` | create, list, mark read notifications |
+| `dashboard/` | `IDashboardService` | `DashboardService` | statistics, analytics |
+
+**Key Service Methods:**
+
+```java
+// OffreService
+public OffreResponse creer(OffreRequest req, MultipartFile image, 
+                           List<MultipartFile> images, String createdByEmail)
+
+public List<OffreResponse> listerOffresOuvertes()
+
+public List<OffreResponse> rechercherParTitre(String titre)
+
+public void supprimerOffre(Long id)
+
+// InscriptionService
+@Transactional
+public InscriptionResponse confirmerInscription(Long id)
+
+@Transactional
+public InscriptionResponse refuserInscription(Long id, String reason)
+
+public List<InscriptionResponse> listerPour(Long offreId)
+
+// ElectionService
+@Transactional
+public ElectionCallResponse creerElectionCall(ElectionCallRequest req)
+
+@Transactional
+public CandidacyResponse soumettreCandidat(Long callId, CandidacyRequest req)
+
+@Transactional
+public VoteResponse voter(Long electionId, VoteRequest request)
+
+@Transactional
+public void publierResultats(Long electionId)
+
+// EmailService
+@Async
+public void sendOffreNotification(String email, Offre offre)
+
+@Async
+public void sendInscriptionConfirmation(String email, Inscription inscription)
+
+@Async
+public void sendElectionResultsToUser(String email, ElectionResults results)
+```
+
+### Repository Layer (tn/star/Pfe/repository/)
+
+**JPA Repository Interfaces:**
+
+| Repository | Entity | Key Query Methods |
+|------------|--------|-------------------|
+| `user/UserRepository` | User | findByEmail, findByRole, findByActifTrue |
+| `offer/OffreRepository` | Offre | findAllByStatut, findByTitreContaining, findByPole |
+| `election/ElectionRepository` | ElectionCall | findAllByStatus, findByCandidacyDeadlineAfter |
+| `election/CandidateApplicationRepository` | CandidateApplication | findByCall, findByUser, findByStatus |
+| `election/VoteRepository` | Vote | findByElection, findByElectionAndUser, countByCandidate |
+| `inscription/InscriptionRepository` | Inscription | findByUserAndOffre, findByStatut, findByOffre |
+| `sondage/SondageRepository` | Sondage | findByStatus, findByCreatedAfter |
+| `sondage/VoteSondageRepository` | VoteSondage | findByUserAndSondage, countByOption |
+| `adhesion/AdhesionRepository` | AdhesionDemande | findByStatut, findByUser |
+
+**Example Repository Methods:**
+
+```java
+public interface OffreRepository extends JpaRepository<Offre, Long> {
+    
+    List<Offre> findByStatut(OffreStatus statut);
+    
+    List<Offre> findByTitreContainingIgnoreCase(String titre);
+    
+    List<Offre> findByPole(Pole pole);
+    
+    @Query("SELECT o FROM Offre o WHERE o.statut = 'PUBLISHED' AND o.dateDebut <= CURRENT_DATE AND o.dateFin >= CURRENT_DATE")
+    List<Offre> findOpenOffers();
+    
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT o FROM Offre o WHERE o.id = :id")
+    Offre findByIdForUpdate(@Param("id") Long id);
+}
+
+public interface ElectionRepository extends JpaRepository<ElectionCall, Long> {
+    
+    @Query("SELECT ec FROM ElectionCall ec WHERE ec.status = 'OPEN_CANDIDACY' AND ec.candidacyDeadline > CURRENT_DATE")
+    List<ElectionCall> findOpenForCandidacy();
+    
+    List<ElectionCall> findByStatusOrderByCreatedAtDesc(ElectionStatus status);
+}
+
+public interface InscriptionRepository extends JpaRepository<Inscription, Long> {
+    
+    @Query("SELECT i FROM Inscription i WHERE i.offre.id = :offreId AND i.statut = 'CONFIRMED'")
+    List<Inscription> findConfirmedByOffre(@Param("offreId") Long offreId);
+    
+    @Query("SELECT COUNT(i) FROM Inscription i WHERE i.offre.id = :offreId")
+    int countByOffre(@Param("offreId") Long offreId);
+    
+    Optional<Inscription> findByUserAndOffre(User user, Offre offre);
+}
+```
+
+### Entity Layer (tn/star/Pfe/entity/)
+
+**User Hierarchy (Inheritance Strategy: JOINED)**
+
+```
+┌─ User (Abstract, @Entity)
+│  ├─ fields: id, email, password, nom, prenom, cin, telephone, matricule
+│  ├─ Admin extends User
+│  ├─ MembreBureau extends User
+│  │  └─ field: pole (ManyToOne)
+│  └─ Adherent extends User
+│     └─ fields: numeroAdhesion, dateAdhesion
+```
+
+| Entity Class | Location | Purpose | Key Fields |
+|-------------|----------|---------|-----------|
+| `User.java` | `entity/user/` | Abstract base class for all users | id, email, password, role, createdAt, updatedAt |
+| `Admin.java` | `entity/user/` | Administrator user type | (inherits all from User) |
+| `MembreBureau.java` | `entity/user/` | Bureau member (officer) | pole (foreign key) |
+| `Adherent.java` | `entity/user/` | Regular member/adherent | numeroAdhesion, dateAdhesion |
+| `Pole.java` | `entity/user/` | Department/Committee | nom, description, membres |
+
+**Offer Management Entities**
+
+| Entity | Purpose | Key Fields | Relationships |
+|--------|---------|-----------|---|
+| `Offre.java` | Job offer / Activity | titre, description, dateDebut, dateFin, capaciteMax, placesRestantes, prix | createdBy (User), pole (Pole), images, inscriptions |
+| `OffreImage.java` | Image attached to offer | data, type, nom | offre (ManyToOne) |
+| `Inscription.java` | User registration for offer | statut, confirmedAt, paiementDate | user (ManyToOne), offre (ManyToOne) |
+
+**Election Entities**
+
+| Entity | Purpose | Key Fields | Relationships |
+|--------|---------|-----------|---|
+| `ElectionCall.java` | Election announcement | titre, description, candidacyDeadline, votingStart, votingEnd, statut | positions, applications, votes |
+| `Position.java` | Position to be elected (e.g., President) | label, maxCandidates | call (ManyToOne) |
+| `CandidateApplication.java` | User applying for position | campaignMessage, statut | user (ManyToOne), call (ManyToOne), position (ManyToOne) |
+| `Vote.java` | Cast vote | voteTimestamp | election (ManyToOne), user (ManyToOne), candidate (ManyToOne) |
+| `ElectionResults.java` | Aggregated voting results | totalVotes, winningCandidate | election (ManyToOne) |
+
+**Survey Entities**
+
+| Entity | Purpose | Key Fields |
+|--------|---------|-----------|
+| `Sondage.java` | Survey/Poll | titre, description, status, dateDebut, dateFin |
+| `OptionSondage.java` | Survey option | label, voteCount |
+| `VoteSondage.java` | User's survey vote | user, sondage, selectedOption |
+
+**Other Entities**
+
+| Entity | Purpose | Key Fields |
+|--------|---------|-----------|
+| `AdhesionDemande.java` | Membership request | user, statut, dateSubmission, reason |
+| `Notification.java` | System notification | user, titre, message, isRead, createdAt |
+
+**Example Entity:**
+
+```java
+@Entity
+@Table(name = "offre")
+@Getter @Setter @NoArgsConstructor @AllArgsConstructor
+@SuperBuilder
+public class Offre {
+    
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    
+    @Column(nullable = false, length = 255)
+    private String titre;
+    
+    @Lob
+    @Column(columnDefinition = "LONGTEXT")
+    private String description;
+    
+    @Column(nullable = false)
+    private LocalDateTime dateDebut;
+    
+    @Column(nullable = false)
+    private LocalDateTime dateFin;
+    
+    @Column(nullable = false)
+    private Integer capaciteMax;
+    
+    @Column(nullable = false)
+    private Integer placesRestantes;
+    
+    @Column(precision = 10, scale = 2)
+    private BigDecimal prixParPersonne;
+    
+    @Enumerated(EnumType.STRING)
+    private OffreStatus statut;  // DRAFT, PUBLISHED, CLOSED
+    
+    @ManyToOne
+    @JoinColumn(name = "created_by_id")
+    private User createdBy;
+    
+    @ManyToOne
+    @JoinColumn(name = "pole_id")
+    private Pole pole;
+    
+    @Lob
+    @Column(name = "image", columnDefinition = "LONGBLOB")
+    private byte[] image;  // Cover image
+    
+    @Column(name = "image_type")
+    private String imageType;
+    
+    @Column(name = "image_nom")
+    private String imageNom;
+    
+    @OneToMany(mappedBy = "offre", cascade = CascadeType.ALL)
+    private List<OffreImage> imagesSupplementaires;
+    
+    @OneToMany(mappedBy = "offre", cascade = CascadeType.ALL)
+    private List<Inscription> inscriptions;
+    
+    @CreationTimestamp
+    private LocalDateTime createdAt;
+    
+    @UpdateTimestamp
+    private LocalDateTime updatedAt;
+}
+```
+
+### Event Layer (tn/star/Pfe/event/)
+
+**Event Classes (Spring Events for async processing):**
+
+| Event Class | Triggered By | Listened By | Purpose |
+|------------|-------------|-----------|---------|
+| `OffreCreatedEvent.java` | OffreService.creer() | OffreEventListener | Notify users of new offer |
+| `InscriptionCreeeEvent.java` | InscriptionService.creer() | InscriptionEventListener | Welcome new registration |
+| `InscriptionStatusChangedEvent.java` | confirm/refuse methods | InscriptionEventListener | Notify status change |
+| `ElectionCallCreatedEvent.java` | ElectionService | ElectionEventListener | Notify admins |
+| `CandidacySubmittedEvent.java` | submitCandidacy() | ElectionEventListener | Confirm candidacy |
+| `ElectionPublishedEvent.java` | publishElection() | ElectionEventListener | Open voting |
+| `ElectionResultsPublishedEvent.java` | publishResults() | ElectionEventListener | Share results |
+| `SondageOpenedEvent.java` | openSondage() | SondageEventListener | Notify voting open |
+| `SondageClosedEvent.java` | closeSondage() | SondageEventListener | Calculate results |
+| `AdhesionDemandeEvent.java` | requestMembership() | AdhesionEventListener | Notify admins |
+| `EmailFailedEvent.java` | EmailService catch | EmailRetryListener | Queue for retry |
+| `EcheanceOverdueEvent.java` | Scheduled task | various | Handle missed deadlines |
+
+**Example Event:**
+
+```java
+public record OffreCreatedEvent(Offre offre) implements ApplicationEvent {
+    // Record automatically generates:
+    // - Constructor
+    // - Getters
+    // - equals, hashCode, toString
+}
+
+// Usage in service:
+publisher.publishEvent(new OffreCreatedEvent(savedOffre));
+
+// Listening in listener:
+@Async
+@EventListener
+public void onOffreCreated(OffreCreatedEvent event) {
+    Offre offre = event.offre();
+    // Handle event...
+}
+```
+
+### Listener Layer (tn/star/Pfe/listener/)
+
+**Event Listeners (async handlers):**
+
+| Listener | Listens To | Actions |
+|----------|-----------|---------|
+| `ElectionEventListener.java` | Election events | Send emails to candidates, admins, members |
+| `InscriptionEventListener.java` | Inscription events | Send confirmations, update cache |
+| `OffreEventListener.java` | Offer events | Notify subscribers, update cache |
+| `AdhesionEventListener.java` | Membership events | Send approval/rejection emails |
+| `SondageEventListener.java` | Survey events | Calculate results, close survey |
+| `EmailRetryListener.java` | EmailFailedEvent | Queue failed emails for retry |
+
+**Example Listener:**
+
+```java
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class ElectionEventListener {
+    
+    private final IEmailService emailService;
+    private final UserRepository userRepository;
+    
+    @Async                  // ← Run in background thread
+    @EventListener          // ← Triggered by event
+    public void onElectionCallCreated(ElectionCallCreatedEvent event) {
+        log.info("ElectionCall created: id={}", event.call().getId());
+        
+        // Find all admins
+        List<User> admins = userRepository.findByRole(Role.ADMIN);
+        
+        // Send emails to each admin
+        for (User admin : admins) {
+            try {
+                emailService.sendElectionCallCreatedToAdmins(
+                    admin.getEmail(),
+                    event.call().getTitre(),
+                    event.call().getDescription()
+                );
+                log.info("Email sent to admin: {}", admin.getEmail());
+            } catch (Exception e) {
+                log.error("Failed to send email to admin: {}", admin.getEmail(), e);
+                // Could publish EmailFailedEvent for retry
+            }
+        }
+    }
+    
+    @Async
+    @EventListener
+    public void onCandidacySubmitted(CandidacySubmittedEvent event) {
+        // Send confirmation to candidate
+        // Notify admins
+        // Check if position full
+    }
+}
+```
+
+### DTO Layer (tn/star/Pfe/dto/)
+
+**Data Transfer Objects (API contracts):**
+
+| DTO | Purpose | Usage |
+|-----|---------|-------|
+| `LoginRequest` | Client → Server | POST /api/auth/login |
+| `AuthResponse` | Server → Client | Response with JWT token |
+| `CreateUserDto` | Client → Server | POST /api/auth/register |
+| `OffreRequest` | Client → Server | POST /api/offres/creer |
+| `OffreResponse` | Server → Client | GET /api/offres |
+| `InscriptionRequest` | Client → Server | POST /api/inscriptions/creer |
+| `InscriptionResponse` | Server → Client | GET /api/inscriptions |
+| `ElectionRequest` | Client → Server | POST /api/elections/create-call |
+| `CandidacyRequest` | Client → Server | POST /api/elections/:id/candidacy |
+| `VoteRequest` | Client → Server | POST /api/elections/:id/vote |
+| `SondageRequest` | Client → Server | POST /api/v1/sondages/creer |
+| `VoteSondageRequest` | Client → Server | POST /api/v1/sondages/:id/vote |
+
+**Why DTOs?**
+
+```java
+// ❌ WITHOUT DTOs: Expose entity directly
+@GetMapping("/{id}")
+public Offre getOffre(@PathVariable Long id) {
+    return offreRepository.findById(id).get();
+    // Problems:
+    // - Exposes all fields (including images as BLOB)
+    // - Can't serialize lazy-loaded collections
+    // - Frontend depends on entity structure
+    // - Security: Can see fields you shouldn't
+}
+
+// ✅ WITH DTOs: Clean API contract
+@GetMapping("/{id}")
+public OffreResponse getOffre(@PathVariable Long id) {
+    Offre offre = offreRepository.findById(id).get();
+    return offreMapper.toResponse(offre);
+    // Benefits:
+    // - Images encoded as Base64 (JSON-safe)
+    // - Only include relevant fields
+    // - API versioning is easier
+    // - Security: Hide internal details
+}
+```
+
+### Mapper Layer (tn/star/Pfe/mapper/)
+
+**Entity ↔ DTO Converters:**
+
+| Mapper | Maps | Purpose |
+|--------|------|---------|
+| `OffreMapper.java` | Offre ↔ OffreRequest/Response | Handle image Base64 encoding |
+| `UserMapper.java` | User ↔ UserDto | Convert user with role-specific fields |
+| `InscriptionMapper.java` | Inscription ↔ InscriptionDto | Include offer/user details |
+| `ElectionMapper.java` | Election ↔ ElectionDto | Include positions, candidates, votes |
+
+**Example Mapper:**
+
+```java
+@Component
+public class OffreMapper {
+    
+    public OffreResponse toResponse(Offre offre) {
+        OffreResponse res = new OffreResponse();
+        
+        res.setId(offre.getId());
+        res.setTitre(offre.getTitre());
+        res.setDescription(offre.getDescription());
+        res.setLieu(offre.getLieu());
+        res.setTypeOffre(offre.getType());
+        res.setStatutOffre(offre.getStatut());
+        
+        // Transform: Image bytes → Base64 string
+        if (offre.getImage() != null) {
+            res.setImageBase64(Base64.getEncoder().encodeToString(offre.getImage()));
+            res.setImageType(offre.getImageType());
+            res.setImageNom(offre.getImageNom());
+        }
+        
+        // Extract nested object: Pole name
+        if (offre.getPole() != null) {
+            res.setPoleId(offre.getPole().getId());
+            res.setPoleNom(offre.getPole().getNom());
+        }
+        
+        // Creator name
+        if (offre.getCreatedBy() != null) {
+            String nom = ((offre.getCreatedBy().getPrenom() != null ? offre.getCreatedBy().getPrenom() : "") + \" \" + (offre.getCreatedBy().getNom() != null ? offre.getCreatedBy().getNom() : \"\")).trim();
+            res.setCreatedByNom(nom.isEmpty() ? offre.getCreatedBy().getEmail() : nom);
+        }
+        
+        return res;
+    }
+}
+```
+
+### Security Layer (tn/star/Pfe/security/)
+
+| Class | Purpose | Key Methods |
+|-------|---------|------------|
+| `JwtUtils.java` | Generate and validate JWT tokens | generateAccessToken, isValidToken, getEmailFromToken |
+| `JwtAuthFilter.java` | Filter incoming requests for JWT | doFilterInternal (validates every request) |
+| `UserPrincipal.java` | Authenticated user representation | getAuthorities (return user roles) |
+| `CustomUserDetailsService.java` | Load user from database by email | loadUserByUsername |
+
+**JWT Token Flow:**
+
+```java
+// 1. Generate token (on login)
+@Service
+public class JwtUtils {
+    
+    private static final long EXPIRATION_TIME = 3600000;  // 1 hour
+    private final String SECRET_KEY = \"your-secret-key-min-256-bits-for-HS256\";
+    
+    public String generateAccessToken(UserPrincipal principal) {
+        return Jwts.builder()
+            .setSubject(principal.getUsername())  // ← Email
+            .claim(\"role\", principal.getAuthorities())
+            .claim(\"prenom\", principal.getPrenom())
+            .claim(\"nom\", principal.getNom())
+            .setIssuedAt(new Date())
+            .setExpiration(new Date(System.currentTimeMillis() + EXPIRATION_TIME))
+            .signWith(SignatureAlgorithm.HS256, SECRET_KEY)  // ← HMAC signing
+            .compact();
+    }
+    
+    // 2. Validate token (on every request)
+    public boolean isValidToken(String token) {
+        try {
+            Jwts.parser()
+                .setSigningKey(SECRET_KEY)
+                .parseClaimsJws(token);  // ← Verify signature
+            return true;
+        } catch (JwtException | IllegalArgumentException e) {
+            return false;
+        }
+    }
+    
+    public String getEmailFromToken(String token) {
+        return Jwts.parser()
+            .setSigningKey(SECRET_KEY)
+            .parseClaimsJws(token)
+            .getBody()
+            .getSubject();
+    }
+}
+
+// 3. Filter validates each request
+@Component
+@RequiredArgsConstructor
+public class JwtAuthFilter extends OncePerRequestFilter {
+    
+    @Override
+    protected void doFilterInternal(
+        HttpServletRequest request,
+        HttpServletResponse response,
+        FilterChain filterChain) throws ServletException, IOException {
+        
+        try {
+            String header = request.getHeader(\"Authorization\");
+            if (header != null && header.startsWith(\"Bearer \")) {
+                String token = header.substring(7);
+                
+                if (jwtUtils.isValidToken(token)) {
+                    String email = jwtUtils.getEmailFromToken(token);
+                    User user = userRepository.findByEmail(email).orElse(null);
+                    
+                    if (user != null) {
+                        // Create authentication (sets in SecurityContext)
+                        UserPrincipal principal = new UserPrincipal(user);
+                        Authentication auth = new UsernamePasswordAuthenticationToken(
+                            principal, null, principal.getAuthorities()
+                        );
+                        SecurityContextHolder.getContext().setAuthentication(auth);
+                    }
+                }
+            }
+            
+            filterChain.doFilter(request, response);
+        } catch (Exception e) {
+            log.error(\"JWT validation error\", e);
+            response.sendError(HttpServletResponse.SC_UNAUTHORIZED);
+        }
+    }
+}
+```
+
+### Enums (tn/star/Pfe/enums/)
+
+| Enum | Values | Usage |
+|------|--------|-------|
+| `Role.java` | ADMIN, MEMBRE_BUREAU, ADHERENT | User roles for authorization |
+| `OffreStatus.java` | DRAFT, PUBLISHED, CLOSED, CANCELLED | Offer lifecycle states |
+| `InscriptionStatus.java` | PENDING, CONFIRMED, REFUSED, CANCELLED | Registration workflow |
+| `ElectionStatus.java` | DRAFT, OPEN_CANDIDACY, VOTING, CLOSED, RESULTS_PUBLISHED | Election lifecycle |
+| `SondageStatus.java` | DRAFT, OPEN, CLOSED | Survey states |
+| `AdhesionStatus.java` | PENDING, APPROVED, REJECTED | Membership request states |
+
+### Exception Handling (tn/star/Pfe/exceptions/)
+
+| Exception | HTTP Status | When Thrown |
+|-----------|------------|-----------|
+| `BadRequestException` | 400 | Invalid input, validation failed |
+| `ResourceNotFoundException` | 404 | Entity not found |
+| `UnauthorizedException` | 401 | Authentication failed |
+| `ForbiddenException` | 403 | Authorization failed |
+| `ConflictException` | 409 | Business rule violated (e.g., offer full) |
+| `InternalServerException` | 500 | Unexpected server error |
+
+---
+
+## Frontend File Structure & Purposes
+
+### Project Configuration Files
+
+| File | Purpose |
+|------|---------|
+| `package.json` | npm dependencies, scripts |
+| `angular.json` | Angular build configuration |
+| `tsconfig.json` | TypeScript compiler options |
+| `vitest-base.config.ts` | Unit test framework config |
+
+### Core App Files (src/app/)
+
+| File | Purpose |
+|------|---------|
+| `main.ts` | Bootstrap application |
+| `app.ts` | Root component |
+| `app.config.ts` | Application-level configuration |
+| `app.routes.ts` | Route definitions (lazy loaded) |
+| `app.spec.ts` | Root component tests |
+
+### Auth Feature (src/app/auth/)
+
+| Component | Purpose | Route |
+|-----------|---------|-------|
+| `login/` | User login form | `/login` |
+| `register/` | New user registration | `/register` |
+| `forgot-password/` | Password reset request | `/forgot-password` |
+| `change-password/` | Change existing password | `/change-password` |
+
+### Admin Feature (src/app/admin/)
+
+| File/Folder | Purpose |
+|-----------|---------|
+| `admin-layout.component.ts` | Admin dashboard container |
+| `admin/guards/admin.guard.ts` | Restrict to ADMIN role only |
+| `dashboard/` | Statistics and overview |
+| `users/` | User management (CRUD) |
+| `offres/` | Offer management |
+| `creer-offre/` | Create/edit offer |
+| `calendrier/` | Calendar of events |
+| `activites/` | Activity management |
+
+### Bureau Feature (src/app/bureau/)
+
+| File/Folder | Purpose |
+|-----------|---------|
+| `bureau-layout.component.ts` | Bureau dashboard |
+| `bureau/guards/bureau.guard.ts` | Restrict to MEMBRE_BUREAU role |
+| `dashboard/` | Bureau statistics |
+| `offres/` | Offer management for bureau |
+| `offres/mon-pole/` | Offers by bureau member's pole |
+| `sondages/` | Survey management |
+| `sondages/creer-sondage/` | Create survey |
+| `sondages/elections/` | Election management |
+| `inscriptions/` | Registration management |
+| `cotisations/` | Fee/payment management |
+| `statistiques/` | Analytics and reports |
+
+### Adherent Feature (src/app/adherent/)
+
+| File/Folder | Purpose |
+|-----------|---------|
+| `adherent-layout.component.ts` | Member dashboard |
+| `dashboard/` | Member home |
+| `offres/` | Browse available offers |
+| `offre-detail/` | Offer details and registration |
+| `inscriptions/` | My registrations |
+| `sondages/` | Vote on surveys |
+| `elections/` | Vote in elections |
+| `cotisation/` | Pay membership fees |
+| `annonces/` | News and announcements |
+| `profil/` | Profile management |
+
+### Core Services (src/app/core/services/)
+
+| Service | Purpose | Key Methods |
+|---------|---------|------------|
+| `auth.service.ts` | Authentication & JWT management | login, logout, isAuthenticated, isAdmin |
+| `election.service.ts` | Election API calls | getElections, submitCandidacy, vote, getResults |
+| `election-call.service.ts` | Election call management | createCall, listCalls, publishResults |
+| `sondage.service.ts` | Survey API calls | createSondage, listSondages, vote |
+| `notification.service.ts` | Notifications | getNotifications, markAsRead |
+
+### Core Guards (src/app/core/guards/)
+
+| Guard | Purpose |
+|------|---------|
+| `auth.guard.ts` | Requires authentication |
+| `admin.guard.ts` | Requires ADMIN role |
+| `bureau.guard.ts` | Requires MEMBRE_BUREAU role |
+| `admin-or-bureau.guard.ts` | Requires ADMIN OR MEMBRE_BUREAU |
+
+### Shared Components (src/app/shared/)
+
+| Folder | Purpose |
+|--------|---------|
+| `components/` | Reusable UI components (header, nav, etc) |
+| `profile-card/` | User profile display |
+| `coming-soon/` | Placeholder for unimplemented features |
+| `pipes/` | Custom data transformation pipes |
+| `utils/` | Helper functions |
+
+### Root Components
+
+| File | Purpose |
+|------|---------|
+| `home/home.component.ts` | Public home page |
+| `partners/` | Partner organizations |
+| `activities/` | Activities listing |
+
+---
+
+## Key Configuration Files
+
+### Backend Configuration
+
+**application.properties / application.yml:**
+```properties
+spring.datasource.url=jdbc:mysql://localhost:3306/amicale_star
+spring.datasource.username=root
+spring.datasource.password=password
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=false
+
+# JWT Secret (min 256 bits for HS256)
+jwt.secret=your-very-long-secret-key-min-256-bits
+jwt.expiration=3600000  # 1 hour
+
+# Email Configuration
+spring.mail.host=smtp.gmail.com
+spring.mail.port=587
+spring.mail.username=your-email@gmail.com
+spring.mail.password=app-password
+
+# Async Thread Pool
+spring.task.execution.pool.core-size=5
+spring.task.execution.pool.max-size=20
+spring.task.execution.pool.queue-capacity=100
+```
+
+### Frontend Configuration
+
+**environment.ts:**
+```typescript
+export const environment = {
+  production: false,
+  apiUrl: 'http://localhost:8080',
+  apiBase: '/api'
+};
+```
+
+---
+
+## Development Workflow
+
+### Adding a New Feature
+
+**1. Backend:**
+```
+Create Entity → Create DTO → Create Repository → Create Service → Create Controller → Create Listener (if event-driven)
+```
+
+**2. Frontend:**
+```
+Create Service → Create Component → Add Route → Create Guard (if needed)
+```
+
+### Example: Add "Download Offer Details as PDF"
+
+**Backend:**
+```java
+// 1. Entity (Offre already exists)
+
+// 2. DTO
+public record OffreExportDto(
+    Long id, String titre, String description, ...
+) {}
+
+// 3. Repository (existing)
+
+// 4. Service
+@Service
+public class OffreExportService {
+    public byte[] exportToPdf(Long offreId) {
+        Offre offre = offreRepository.findById(offreId).orElseThrow();
+        // Generate PDF using iText or Apache PDFBox
+        return pdfGenerator.generate(offreMapper.toExportDto(offre));
+    }
+}
+
+// 5. Controller
+@GetMapping("/{id}/export/pdf")
+public ResponseEntity<byte[]> exportPdf(@PathVariable Long id) {
+    byte[] pdf = offreExportService.exportToPdf(id);
+    return ResponseEntity.ok()
+        .header("Content-Disposition", "attachment; filename=offre.pdf")
+        .body(pdf);
+}
+```
+
+**Frontend:**
+```typescript
+// 1. Service
+@Injectable({ providedIn: 'root' })
+export class OffreExportService {
+    constructor(private http: HttpClient) {}
+    
+    exportPdf(offreId: number) {
+        return this.http.get(
+            `/api/offres/${offreId}/export/pdf`,
+            { responseType: 'blob' }
+        );
+    }
+}
+
+// 2. Component
+export class OffreDetailComponent {
+    constructor(private exportService: OffreExportService) {}
+    
+    downloadPdf() {
+        this.exportService.exportPdf(this.offreId).subscribe(blob => {
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'offre.pdf';
+            a.click();
+        });
+    }
+}
+
+// 3. Template
+<button (click)="downloadPdf()">Download PDF</button>
+```
+
+---
+
+## Testing Strategy
+
+### Backend Unit Tests
+
+```java
+// OffreServiceTest.java
+@SpringBootTest
+class OffreServiceTest {
+    
+    @MockBean
+    private OffreRepository offreRepository;
+    
+    @InjectMocks
+    private OffreService offreService;
+    
+    @Test
+    void testCreerOffre() {
+        // Arrange
+        OffreRequest req = new OffreRequest(...);
+        
+        // Act
+        OffreResponse response = offreService.creer(req, null, null, "user@example.com");
+        
+        // Assert
+        assertNotNull(response.getId());
+        assertEquals(req.titre(), response.getTitre());
+    }
+    
+    @Test
+    void testCreerOffreThrowsExceptionWhenCapacityInvalid() {
+        // Arrange
+        OffreRequest req = new OffreRequest(
+            titre="Test",
+            capaciteMax=-5  // Invalid!
+        );
+        
+        // Act & Assert
+        assertThrows(BadRequestException.class, () -> {
+            offreService.creer(req, null, null, "user@example.com");
+        });
+    }
+}
+```
+
+### Frontend Component Tests
+
+```typescript
+// offre-detail.component.spec.ts
+describe('OffreDetailComponent', () => {
+    let component: OffreDetailComponent;
+    let fixture: ComponentFixture<OffreDetailComponent>;
+    let mockOffreService: jasmine.SpyObj<OffreService>;
+    
+    beforeEach(async () => {
+        mockOffreService = jasmine.createSpyObj('OffreService', ['getOffre']);
+        
+        await TestBed.configureTestingModule({
+            imports: [OffreDetailComponent],
+            providers: [
+                { provide: OffreService, useValue: mockOffreService }
+            ]
+        }).compileComponents();
+        
+        fixture = TestBed.createComponent(OffreDetailComponent);
+        component = fixture.componentInstance;
+    });
+    
+    it('should display offre details', () => {
+        const mockOffre = { id: 1, titre: 'Internship', ... };
+        mockOffreService.getOffre.and.returnValue(of(mockOffre));
+        
+        fixture.detectChanges();
+        
+        expect(component.offre()).toEqual(mockOffre);
+    });
+});
+```
+
+---
+
+## Deployment & DevOps
+
+### Docker Backend (Dockerfile)
+
+```dockerfile
+FROM openjdk:17-jdk-slim
+
+COPY target/Pfe-0.0.1-SNAPSHOT.jar app.jar
+
+ENTRYPOINT ["java", "-jar", "/app.jar"]
+```
+
+### Docker Frontend (Dockerfile)
+
+```dockerfile
+FROM node:20 AS builder
+COPY . /app
+WORKDIR /app
+RUN npm install && npm run build
+
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+```
+
+### Docker Compose
+
+```yaml
+version: '3.8'
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: amicale_star
+    ports:
+      - "3306:3306"
+  
+  backend:
+    build: ./Amicale-STAR/Pfe
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mysql
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/amicale_star
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: root
+  
+  frontend:
+    build: ./frontend-amicale
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+```
+
+---
+
+## Key Metrics & Monitoring
+
+### Performance Metrics to Monitor
+
+- **Response Time**: Average API response time (target: <200ms)
+- **Database Query Time**: Slow query log (target: <100ms)
+- **Throughput**: Requests per second (target: >1000 RPS)
+- **Error Rate**: 5xx errors (target: <0.1%)
+- **Cache Hit Rate**: Redis cache hit percentage (target: >80%)
+
+### Logging Strategy
+
+```java
+// Use SLF4J with Logback
+@Slf4j
+@Service
+public class OffreService {
+    
+    public void creer(OffreRequest req) {
+        log.debug(\"Creating offre with title: {}\", req.titre());
+        
+        try {
+            Offre offre = offreRepository.save(...);
+            log.info(\"Offre created successfully: id={}, title={}\", offre.getId(), offre.getTitre());
+            publisher.publishEvent(new OffreCreatedEvent(offre));
+        } catch (Exception e) {
+            log.error(\"Failed to create offre: {}\", req.titre(), e);
+            throw new InternalServerException(\"Failed to create offer\");
+        }
+    }
+}
+```
+
+---
+
+## Conclusion
+
+This reference map provides a complete guide to understanding the codebase structure, dependencies, and design patterns. Use it alongside the main architecture documentation for comprehensive understanding.
+
