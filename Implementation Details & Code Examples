@@ -1,0 +1,1155 @@
+# AmicaleStar - Implementation Details & Code Examples
+
+## Quick Reference for Feature Implementation
+
+---
+
+## 1. BUREAU MEMBER REGISTRATION - Deep Dive
+
+### What: How Bureau Members Get Registered
+Bureau members (admin users) manage member registrations through a dedicated interface.
+
+### Frontend: Registration Form Component
+
+**Location**: `src/app/bureau/inscriptions/`
+
+**Key Responsibilities**:
+1. Display registration form
+2. Collect member information
+3. Validate data before submission
+4. Show loading/success states
+5. Handle errors gracefully
+
+**Implementation Pattern**:
+
+```typescript
+// InscriptionService - API Communication
+export class InscriptionService {
+  constructor(private http: HttpClient) {}
+
+  // Create new inscription
+  createInscription(data: InscriptionDTO): Observable<Inscription> {
+    return this.http.post<Inscription>(
+      '/api/inscriptions',
+      data
+    ).pipe(
+      tap(() => this.notifySuccess('Inscription créée')),
+      catchError(err => {
+        this.notifyError('Erreur lors de l\'inscription');
+        return throwError(() => err);
+      })
+    );
+  }
+
+  // Get all inscriptions (paginated)
+  getInscriptions(page: number = 0, size: number = 10) {
+    return this.http.get<Page<Inscription>>(
+      `/api/inscriptions?page=${page}&size=${size}`
+    );
+  }
+
+  // Update inscription status
+  updateInscriptionStatus(id: number, status: string) {
+    return this.http.patch(`/api/inscriptions/${id}/status`, { status });
+  }
+}
+
+// InscriptionComponent - UI Logic
+@Component({
+  selector: 'app-inscriptions',
+  standalone: true,
+  imports: [ReactiveFormsModule, AsyncPipe, ...],
+  template: `...`
+})
+export class InscriptionsComponent implements OnInit {
+  form: FormGroup;
+  inscriptions$: Observable<Page<Inscription>>;
+  loading$ = new BehaviorSubject(false);
+
+  constructor(
+    private fb: FormBuilder,
+    private service: InscriptionService
+  ) {
+    this.form = this.initializeForm();
+  }
+
+  ngOnInit() {
+    // Load inscriptions on init
+    this.loadInscriptions();
+  }
+
+  // Form definition with validation
+  private initializeForm(): FormGroup {
+    return this.fb.group({
+      firstName: ['', [Validators.required, Validators.minLength(2)]],
+      lastName: ['', [Validators.required, Validators.minLength(2)]],
+      email: ['', [Validators.required, Validators.email]],
+      phoneNumber: ['', [Validators.pattern(/^\d{8,}$/)]],
+      joinDate: ['', Validators.required],
+      status: ['PENDING', Validators.required]
+    });
+  }
+
+  // Submit form
+  onSubmit() {
+    if (!this.form.valid) return;
+
+    this.loading$.next(true);
+    
+    this.service.createInscription(this.form.value)
+      .pipe(
+        finalize(() => this.loading$.next(false)),
+        tap(() => {
+          this.form.reset();
+          this.loadInscriptions(); // Refresh list
+        })
+      )
+      .subscribe({
+        error: (err) => console.error(err)
+      });
+  }
+
+  // Load inscriptions with pagination
+  private loadInscriptions(page = 0) {
+    this.inscriptions$ = this.service.getInscriptions(page);
+  }
+
+  // Change member status
+  updateStatus(id: number, newStatus: string) {
+    this.service.updateInscriptionStatus(id, newStatus)
+      .pipe(tap(() => this.loadInscriptions()))
+      .subscribe();
+  }
+}
+```
+
+### Backend: Registration Processing
+
+**Location**: `Pfe/src/main/java/tn/controller/InscriptionController.java`
+
+```java
+// Data Transfer Object - API Contract
+public class InscriptionDTO {
+    private String firstName;
+    private String lastName;
+    private String email;
+    private String phoneNumber;
+    private LocalDate joinDate;
+    private String status; // PENDING, APPROVED, REJECTED
+}
+
+// Entity - Database Model
+@Entity
+@Table(name = "inscriptions")
+public class Inscription {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    
+    private String firstName;
+    private String lastName;
+    private String email;
+    private String phoneNumber;
+    private LocalDate joinDate;
+    
+    @Enumerated(EnumType.STRING)
+    private InscriptionStatus status;
+    
+    @CreationTimestamp
+    private LocalDateTime createdAt;
+    
+    @UpdateTimestamp
+    private LocalDateTime updatedAt;
+}
+
+// Controller - HTTP Endpoint
+@RestController
+@RequestMapping("/api/inscriptions")
+@PreAuthorize("hasRole('BUREAU')")
+public class InscriptionController {
+    
+    @Autowired
+    private InscriptionService service;
+    
+    // POST - Create new inscription
+    @PostMapping
+    public ResponseEntity<InscriptionDTO> createInscription(
+            @Valid @RequestBody InscriptionDTO dto) {
+        InscriptionDTO result = service.createInscription(dto);
+        return ResponseEntity.status(HttpStatus.CREATED).body(result);
+    }
+    
+    // GET - List inscriptions with pagination
+    @GetMapping
+    public ResponseEntity<Page<InscriptionDTO>> getInscriptions(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        Page<InscriptionDTO> result = service.getInscriptions(
+            PageRequest.of(page, size, Sort.by("createdAt").descending())
+        );
+        return ResponseEntity.ok(result);
+    }
+    
+    // PATCH - Update inscription status
+    @PatchMapping("/{id}/status")
+    public ResponseEntity<InscriptionDTO> updateStatus(
+            @PathVariable Long id,
+            @RequestBody UpdateStatusRequest request) {
+        InscriptionDTO result = service.updateStatus(id, request.getStatus());
+        return ResponseEntity.ok(result);
+    }
+}
+
+// Service Layer - Business Logic
+@Service
+@Transactional
+public class InscriptionService {
+    
+    @Autowired
+    private InscriptionRepository repository;
+    
+    @Autowired
+    private NotificationService notificationService;
+    
+    @Autowired
+    private ApplicationEventPublisher eventPublisher;
+    
+    // Create inscription with validation
+    public InscriptionDTO createInscription(InscriptionDTO dto) {
+        // Validation
+        if (repository.existsByEmail(dto.getEmail())) {
+            throw new DuplicateEmailException("Email already exists");
+        }
+        
+        // Transform DTO to Entity
+        Inscription entity = mapToEntity(dto);
+        entity.setStatus(InscriptionStatus.PENDING);
+        
+        // Save to database
+        Inscription saved = repository.save(entity);
+        
+        // Trigger notification event
+        eventPublisher.publishEvent(
+            new InscriptionCreatedEvent(saved)
+        );
+        
+        return mapToDTO(saved);
+    }
+    
+    // Update status and notify
+    public InscriptionDTO updateStatus(Long id, String status) {
+        Inscription inscription = repository.findById(id)
+            .orElseThrow(() -> new ResourceNotFoundException("Not found"));
+        
+        inscription.setStatus(InscriptionStatus.valueOf(status));
+        Inscription updated = repository.save(inscription);
+        
+        // Send notification to member
+        notificationService.notifyMember(updated);
+        
+        return mapToDTO(updated);
+    }
+}
+
+// Repository - Data Access
+@Repository
+public interface InscriptionRepository extends JpaRepository<Inscription, Long> {
+    boolean existsByEmail(String email);
+    Page<Inscription> findByStatus(InscriptionStatus status, Pageable pageable);
+    List<Inscription> findByJoinDateBetween(LocalDate start, LocalDate end);
+}
+```
+
+### Key Design Patterns Used
+
+**1. DTO Pattern** - Why?
+- Security: Never expose database entities directly
+- Flexibility: Can have different API versions
+- Evolution: Backend can change without affecting API
+
+**2. Service Layer Pattern** - Why?
+- Business logic isolated from HTTP layer
+- Reusable across different controllers
+- Easy to test independently
+
+**3. Event Publishing** - Why?
+- Decoupling: Service doesn't know about notifications
+- Scalability: Easy to add new listeners later
+- Maintainability: Changes to one listener don't affect others
+
+**4. Transaction Management** - Why?
+- Data consistency: Multiple operations as atomic unit
+- Error handling: Automatic rollback on exceptions
+- Isolation: Prevents dirty reads
+
+---
+
+## 2. NOTIFICATION SYSTEM - Deep Dive
+
+### Architecture: How Notifications Get Sent
+
+```
+┌─────────────────────────────────────────┐
+│  Event Trigger                          │
+│  (Registration, Status Change, etc)     │
+└──────────────┬──────────────────────────┘
+               │
+               ↓
+┌─────────────────────────────────────────┐
+│  Event Listener (Spring Event)          │
+│  Catches event in database transaction  │
+└──────────────┬──────────────────────────┘
+               │
+               ↓
+┌─────────────────────────────────────────┐
+│  Notification Service                   │
+│  ├─ Format message                      │
+│  ├─ Send Email (async)                  │
+│  ├─ Save to Database                    │
+│  └─ Broadcast via WebSocket (real-time) │
+└──────────────┬──────────────────────────┘
+               │
+         ┌─────┴──────┬─────────┬──────────┐
+         ↓            ↓         ↓          ↓
+      Email        Database  WebSocket  Logger
+    (External)    (History) (Real-time)
+```
+
+### Frontend: Notification Display
+
+```typescript
+// NotificationService - RxJS Observable Stream
+@Injectable({ providedIn: 'root' })
+export class NotificationService {
+  
+  // Subject for notifications
+  private notificationSubject = new Subject<Notification>();
+  
+  // Public stream
+  notifications$ = this.notificationSubject.asObservable().pipe(
+    // Keep notifications visible for 5 seconds
+    tap(notif => {
+      setTimeout(() => this.dismiss(notif.id), 5000);
+    })
+  );
+  
+  // Web notification permission
+  private requestNotificationPermission() {
+    if ('Notification' in window) {
+      Notification.requestPermission();
+    }
+  }
+  
+  // Show notification
+  show(message: string, type: 'success' | 'error' | 'info') {
+    const notification: Notification = {
+      id: Date.now(),
+      message,
+      type,
+      timestamp: new Date()
+    };
+    
+    this.notificationSubject.next(notification);
+    
+    // Also show browser notification if permission granted
+    if (Notification.permission === 'granted') {
+      new Notification(message);
+    }
+  }
+  
+  dismiss(id: number) {
+    // Implementation
+  }
+}
+
+// NotificationComponent - Display notifications
+@Component({
+  selector: 'app-notifications',
+  standalone: true,
+  template: `
+    <div class="notifications-container">
+      <div *ngFor="let notif of notifications$ | async" 
+           [class]="'notification ' + notif.type">
+        {{ notif.message }}
+        <button (click)="dismiss(notif.id)">×</button>
+      </div>
+    </div>
+  `,
+  styles: [`
+    .notification { padding: 1rem; margin: 0.5rem; border-radius: 4px; }
+    .success { background-color: #4caf50; color: white; }
+    .error { background-color: #f44336; color: white; }
+    .info { background-color: #2196f3; color: white; }
+  `]
+})
+export class NotificationComponent {
+  notifications$ = this.notificationService.notifications$;
+  
+  constructor(private notificationService: NotificationService) {}
+  
+  dismiss(id: number) {
+    this.notificationService.dismiss(id);
+  }
+}
+
+// Notification model
+export interface Notification {
+  id: number;
+  message: string;
+  type: 'success' | 'error' | 'info' | 'warning';
+  timestamp: Date;
+  actionUrl?: string;
+}
+```
+
+### Backend: Notification Event System
+
+```java
+// Event - Published when inscription created
+public class InscriptionCreatedEvent extends ApplicationEvent {
+    private final Inscription inscription;
+    
+    public InscriptionCreatedEvent(Object source, Inscription inscription) {
+        super(source);
+        this.inscription = inscription;
+    }
+    
+    public Inscription getInscription() {
+        return inscription;
+    }
+}
+
+// Listener - Handles event
+@Component
+public class InscriptionEventListener {
+    
+    @Autowired
+    private NotificationService notificationService;
+    
+    @EventListener
+    @Async
+    public void onInscriptionCreated(InscriptionCreatedEvent event) {
+        Inscription inscription = event.getInscription();
+        
+        // Send confirmation to member
+        notificationService.sendEmail(
+            inscription.getEmail(),
+            "Registration Confirmation",
+            buildConfirmationTemplate(inscription)
+        );
+        
+        // Notify admins
+        notificationService.notifyAdmins(
+            "New inscription: " + inscription.getFullName()
+        );
+        
+        // Save notification record
+        notificationService.saveNotification(
+            inscription.getId(),
+            NotificationType.REGISTRATION_CREATED,
+            "Inscription créée pour: " + inscription.getFullName()
+        );
+    }
+}
+
+// Notification Service
+@Service
+@Transactional
+public class NotificationService {
+    
+    @Autowired
+    private EmailService emailService;
+    
+    @Autowired
+    private NotificationRepository repository;
+    
+    @Autowired
+    private WebSocketService webSocketService;
+    
+    // Send email notification
+    public void sendEmail(String to, String subject, String content) {
+        try {
+            SimpleMailMessage message = new SimpleMailMessage();
+            message.setTo(to);
+            message.setSubject(subject);
+            message.setText(content);
+            message.setFrom("noreply@amicalestar.tn");
+            
+            emailService.send(message);
+        } catch (Exception e) {
+            log.error("Failed to send email", e);
+        }
+    }
+    
+    // Notify all admins
+    public void notifyAdmins(String message) {
+        // Get all admin users
+        List<User> admins = userRepository.findByRole("BUREAU");
+        
+        // Save notification for each admin
+        admins.forEach(admin -> {
+            saveNotification(
+                admin.getId(),
+                NotificationType.ADMIN_ALERT,
+                message
+            );
+        });
+        
+        // Broadcast to connected WebSocket clients
+        webSocketService.broadcastToAdmins(
+            new NotificationMessage(message, NotificationType.ADMIN_ALERT)
+        );
+    }
+    
+    // Save notification to database
+    public void saveNotification(
+            Long userId, 
+            NotificationType type, 
+            String message) {
+        
+        NotificationEntity entity = new NotificationEntity();
+        entity.setUserId(userId);
+        entity.setType(type);
+        entity.setMessage(message);
+        entity.setReadAt(null); // Mark as unread
+        entity.setCreatedAt(LocalDateTime.now());
+        
+        repository.save(entity);
+    }
+}
+
+// WebSocket Service - Real-time updates
+@Component
+public class WebSocketService {
+    
+    @Autowired
+    private SimpMessagingTemplate messagingTemplate;
+    
+    public void broadcastToAdmins(NotificationMessage message) {
+        // Send to all subscribed admins
+        messagingTemplate.convertAndSend(
+            "/topic/admin-notifications",
+            message
+        );
+    }
+    
+    public void sendToUser(Long userId, NotificationMessage message) {
+        // Send to specific user
+        messagingTemplate.convertAndSendToUser(
+            userId.toString(),
+            "/queue/notifications",
+            message
+        );
+    }
+}
+
+// Frontend WebSocket subscription
+@Injectable({ providedIn: 'root' })
+export class WebSocketService {
+  
+  private stompClient: StompClient;
+  private notificationSubject = new Subject<Notification>();
+  
+  connect(): Observable<Notification> {
+    const socket = new SockJS('/ws');
+    this.stompClient = Stomp.over(socket);
+    
+    this.stompClient.connect({}, () => {
+      // Subscribe to admin notifications
+      this.stompClient.subscribe(
+        '/topic/admin-notifications',
+        (msg) => {
+          const notification = JSON.parse(msg.body);
+          this.notificationSubject.next(notification);
+        }
+      );
+    });
+    
+    return this.notificationSubject.asObservable();
+  }
+}
+```
+
+### Why This Architecture?
+
+**Asynchronous Processing**:
+- Email sending doesn't block request
+- User gets response immediately
+- Notification sent in background
+
+**Event-Driven**:
+- Services are decoupled
+- Easy to add new notification types
+- Single responsibility principle
+
+**Real-time Updates**:
+- WebSocket for instant notification
+- Fallback to polling if needed
+- Observable pattern in frontend
+
+---
+
+## 3. FEATURE IMPLEMENTATION: Survey System (Sondage)
+
+### Complete User Flow
+
+```
+Bureau Member Creates Survey
+    ↓
+Survey saved with questions
+    ↓
+Members see survey in app
+    ↓
+Members vote on survey
+    ↓
+Results aggregated in real-time
+    ↓
+Bureau views analytics
+```
+
+### Frontend Implementation
+
+```typescript
+// SondageService - API Communication
+@Injectable({ providedIn: 'root' })
+export class SondageService {
+  constructor(private http: HttpClient) {}
+  
+  // Create survey
+  createSondage(data: CreateSondageDTO): Observable<Sondage> {
+    return this.http.post<Sondage>('/api/sondages', data).pipe(
+      tap(sondage => this.notificationService.show(
+        `Sondage "${sondage.title}" créé`,
+        'success'
+      )),
+      catchError(error => {
+        this.notificationService.show('Erreur lors de la création', 'error');
+        return throwError(() => error);
+      })
+    );
+  }
+  
+  // Get all surveys
+  getSondages(): Observable<Sondage[]> {
+    return this.http.get<Sondage[]>('/api/sondages');
+  }
+  
+  // Vote on survey
+  vote(sondageId: number, questionId: number, answerIndex: number) {
+    return this.http.post(
+      `/api/sondages/${sondageId}/vote`,
+      { questionId, answerIndex }
+    ).pipe(
+      tap(() => this.notificationService.show('Vote enregistré', 'success'))
+    );
+  }
+  
+  // Get results
+  getResults(sondageId: number): Observable<SondageResults> {
+    return this.http.get<SondageResults>(
+      `/api/sondages/${sondageId}/results`
+    );
+  }
+}
+
+// Create Sondage Component (Bureau)
+@Component({
+  selector: 'app-create-sondage',
+  standalone: true,
+  imports: [ReactiveFormsModule, NgFor, NgIf],
+  template: `
+    <form [formGroup]="form" (ngSubmit)="onSubmit()">
+      <input formControlName="title" placeholder="Titre du sondage">
+      
+      <div formArrayName="questions">
+        <div *ngFor="let q of questions.controls; let i = index" 
+             [formGroupName]="i">
+          <input formControlName="text" placeholder="Question">
+          
+          <div formArrayName="answers">
+            <input *ngFor="let a of answers(i).controls; let j = index"
+                   [formControl]="a"
+                   placeholder="Réponse {{ j + 1 }}">
+            <button (click)="addAnswer(i)" type="button">+ Réponse</button>
+          </div>
+          
+          <button (click)="removeQuestion(i)" type="button">- Question</button>
+        </div>
+      </div>
+      
+      <button (click)="addQuestion()" type="button">+ Question</button>
+      <button type="submit" [disabled]="!form.valid">Créer sondage</button>
+    </form>
+  `
+})
+export class CreateSondageComponent {
+  form: FormGroup;
+  
+  constructor(
+    private fb: FormBuilder,
+    private service: SondageService
+  ) {
+    this.form = this.initForm();
+  }
+  
+  private initForm(): FormGroup {
+    return this.fb.group({
+      title: ['', Validators.required],
+      questions: this.fb.array([this.createQuestion()])
+    });
+  }
+  
+  private createQuestion(): FormGroup {
+    return this.fb.group({
+      text: ['', Validators.required],
+      answers: this.fb.array([
+        this.fb.control('', Validators.required),
+        this.fb.control('', Validators.required)
+      ])
+    });
+  }
+  
+  get questions(): FormArray {
+    return this.form.get('questions') as FormArray;
+  }
+  
+  answers(questionIndex: number): FormArray {
+    return this.questions.at(questionIndex).get('answers') as FormArray;
+  }
+  
+  addQuestion() {
+    this.questions.push(this.createQuestion());
+  }
+  
+  removeQuestion(index: number) {
+    this.questions.removeAt(index);
+  }
+  
+  addAnswer(questionIndex: number) {
+    this.answers(questionIndex).push(
+      this.fb.control('', Validators.required)
+    );
+  }
+  
+  onSubmit() {
+    if (this.form.invalid) return;
+    
+    this.service.createSondage(this.form.value).subscribe({
+      next: (sondage) => {
+        this.form.reset();
+        // Navigate away or show success
+      }
+    });
+  }
+}
+
+// Vote on Survey Component (Member)
+@Component({
+  selector: 'app-vote-sondage',
+  standalone: true,
+  imports: [NgFor, NgIf],
+  template: `
+    <div *ngIf="sondage$ | async as sondage">
+      <h2>{{ sondage.title }}</h2>
+      
+      <div *ngFor="let question of sondage.questions">
+        <p>{{ question.text }}</p>
+        <div *ngFor="let answer of question.answers; let i = index">
+          <label>
+            <input type="radio" 
+                   [name]="'question-' + question.id"
+                   (change)="onVote(sondage.id, question.id, i)">
+            {{ answer }}
+          </label>
+        </div>
+      </div>
+      
+      <button (click)="viewResults()">Voir résultats</button>
+    </div>
+  `
+})
+export class VoteSondageComponent implements OnInit {
+  @Input() sondageId: number;
+  
+  sondage$: Observable<Sondage>;
+  
+  constructor(private service: SondageService) {}
+  
+  ngOnInit() {
+    this.sondage$ = this.service.getSondages().pipe(
+      map(sondages => sondages.find(s => s.id === this.sondageId))
+    );
+  }
+  
+  onVote(sondageId: number, questionId: number, answerIndex: number) {
+    this.service.vote(sondageId, questionId, answerIndex).subscribe();
+  }
+  
+  viewResults() {
+    // Navigate to results view
+  }
+}
+```
+
+### Backend Implementation
+
+```java
+// Entity Models
+@Entity
+public class Sondage {
+    @Id @GeneratedValue
+    private Long id;
+    
+    private String title;
+    private String description;
+    
+    @CreationTimestamp
+    private LocalDateTime createdAt;
+    
+    @UpdateTimestamp
+    private LocalDateTime updatedAt;
+    
+    @OneToMany(cascade = CascadeType.ALL, orphanRemoval = true)
+    @JoinColumn(name = "sondage_id")
+    private List<Question> questions;
+}
+
+@Entity
+public class Question {
+    @Id @GeneratedValue
+    private Long id;
+    
+    private String text;
+    
+    @ElementCollection
+    private List<String> answers; // ["Option A", "Option B", ...]
+}
+
+@Entity
+public class Vote {
+    @Id @GeneratedValue
+    private Long id;
+    
+    @ManyToOne
+    private Sondage sondage;
+    
+    @ManyToOne
+    private User user;
+    
+    private Long questionId;
+    private Integer answerIndex; // Index of selected answer
+    
+    @CreationTimestamp
+    private LocalDateTime votedAt;
+}
+
+// DTOs
+public class CreateSondageDTO {
+    public String title;
+    public List<CreateQuestionDTO> questions;
+}
+
+public class CreateQuestionDTO {
+    public String text;
+    public List<String> answers;
+}
+
+// Repository
+@Repository
+public interface VoteRepository extends JpaRepository<Vote, Long> {
+    boolean existsBySondageAndUserAndQuestionId(
+        Sondage sondage, User user, Long questionId
+    );
+    List<Vote> findBySondageAndQuestionId(Sondage sondage, Long questionId);
+}
+
+// Service
+@Service
+@Transactional
+public class SondageService {
+    
+    @Autowired
+    private SondageRepository sondageRepository;
+    
+    @Autowired
+    private VoteRepository voteRepository;
+    
+    @Autowired
+    private UserService userService;
+    
+    // Create sondage
+    public SondageDTO createSondage(CreateSondageDTO dto) {
+        Sondage sondage = new Sondage();
+        sondage.setTitle(dto.title);
+        
+        sondage.setQuestions(dto.questions.stream()
+            .map(qDto -> {
+                Question q = new Question();
+                q.setText(qDto.text);
+                q.setAnswers(qDto.answers);
+                return q;
+            })
+            .collect(Collectors.toList())
+        );
+        
+        Sondage saved = sondageRepository.save(sondage);
+        return mapToDTO(saved);
+    }
+    
+    // Record vote
+    public void recordVote(
+            Long sondageId,
+            Long questionId,
+            Integer answerIndex,
+            Long userId) {
+        
+        Sondage sondage = sondageRepository.findById(sondageId)
+            .orElseThrow(() -> new ResourceNotFoundException());
+        
+        User user = userService.findById(userId);
+        
+        // Check if already voted
+        if (voteRepository.existsBySondageAndUserAndQuestionId(
+                sondage, user, questionId)) {
+            throw new IllegalArgumentException("Already voted");
+        }
+        
+        Vote vote = new Vote();
+        vote.setSondage(sondage);
+        vote.setUser(user);
+        vote.setQuestionId(questionId);
+        vote.setAnswerIndex(answerIndex);
+        
+        voteRepository.save(vote);
+    }
+    
+    // Get results
+    public SondageResultsDTO getResults(Long sondageId) {
+        Sondage sondage = sondageRepository.findById(sondageId)
+            .orElseThrow();
+        
+        SondageResultsDTO results = new SondageResultsDTO();
+        results.setSondageId(sondageId);
+        results.setTitle(sondage.getTitle());
+        
+        results.setQuestionResults(
+            sondage.getQuestions().stream()
+                .map(question -> {
+                    QuestionResultDTO qResult = new QuestionResultDTO();
+                    qResult.setQuestionId(question.getId());
+                    qResult.setText(question.getText());
+                    
+                    // Count votes for each answer
+                    List<Vote> votes = voteRepository.findBySondageAndQuestionId(
+                        sondage, question.getId()
+                    );
+                    
+                    qResult.setAnswerCounts(
+                        IntStream.range(0, question.getAnswers().size())
+                            .mapToObj(i -> {
+                                long count = votes.stream()
+                                    .filter(v -> v.getAnswerIndex() == i)
+                                    .count();
+                                return new AnswerResultDTO(
+                                    question.getAnswers().get(i),
+                                    count
+                                );
+                            })
+                            .collect(Collectors.toList())
+                    );
+                    
+                    return qResult;
+                })
+                .collect(Collectors.toList())
+        );
+        
+        return results;
+    }
+}
+
+// Controller
+@RestController
+@RequestMapping("/api/sondages")
+public class SondageController {
+    
+    @Autowired
+    private SondageService service;
+    
+    @PostMapping
+    @PreAuthorize("hasRole('BUREAU')")
+    public ResponseEntity<SondageDTO> createSondage(
+            @Valid @RequestBody CreateSondageDTO dto) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+            .body(service.createSondage(dto));
+    }
+    
+    @PostMapping("/{id}/vote")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Void> vote(
+            @PathVariable Long id,
+            @RequestBody VoteDTO dto,
+            @AuthenticationPrincipal UserDetails userDetails) {
+        
+        User user = userService.findByEmail(userDetails.getUsername());
+        service.recordVote(id, dto.questionId, dto.answerIndex, user.getId());
+        
+        return ResponseEntity.noContent().build();
+    }
+    
+    @GetMapping("/{id}/results")
+    public ResponseEntity<SondageResultsDTO> getResults(@PathVariable Long id) {
+        return ResponseEntity.ok(service.getResults(id));
+    }
+}
+```
+
+### Key Design Decisions
+
+**1. Why separate Vote entity?**
+- Track who voted and when
+- Prevent duplicate votes
+- Audit trail for integrity
+
+**2. Why ElementCollection for answers?**
+- Simple data structure
+- No need for separate table
+- Easier to query
+
+**3. Why aggregate counts in service?**
+- Complex calculation
+- Not suitable for database query
+- Reusable across endpoints
+
+**4. Why FormArray?**
+- Dynamic question/answer fields
+- Easy to add/remove
+- Programmatic form building
+
+---
+
+## Quick Tips for Jury Answers
+
+### When asked "How do you handle X?"
+
+**Concurrent registrations?**
+- Database unique constraints prevent duplicates
+- Optimistic locking for updates
+- Transaction isolation prevents race conditions
+
+**User permission levels?**
+- @PreAuthorize annotations on endpoints
+- Route guards prevent unauthorized access
+- Role-based method invocation
+
+**Database consistency?**
+- Spring @Transactional for atomic operations
+- Foreign key constraints in database
+- Application-level validation
+
+**Performance with large datasets?**
+- Pagination on all list endpoints
+- Database indexing on frequently queried columns
+- Lazy loading relationships
+- Query optimization with JPQL
+
+**Error handling?**
+- Specific exceptions for different scenarios
+- Global exception handler in Spring
+- Meaningful error messages to frontend
+- Logging for debugging
+
+---
+
+## Testing Examples
+
+### Frontend Unit Test
+```typescript
+describe('InscriptionsComponent', () => {
+  let component: InscriptionsComponent;
+  let fixture: ComponentFixture<InscriptionsComponent>;
+  let service: InscriptionService;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [InscriptionsComponent],
+      providers: [{
+        provide: InscriptionService,
+        useValue: jasmine.createSpyObj('InscriptionService', [
+          'createInscription', 'getInscriptions'
+        ])
+      }]
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(InscriptionsComponent);
+    component = fixture.componentInstance;
+    service = TestBed.inject(InscriptionService);
+  });
+
+  it('should display inscriptions from service', () => {
+    const mockData = {
+      content: [{ id: 1, firstName: 'John' }],
+      totalElements: 1
+    };
+    
+    spyOn(service, 'getInscriptions')
+      .and.returnValue(of(mockData));
+
+    component.ngOnInit();
+
+    expect(service.getInscriptions).toHaveBeenCalled();
+  });
+
+  it('should submit form with valid data', () => {
+    component.form.patchValue({
+      firstName: 'John',
+      lastName: 'Doe',
+      email: 'john@example.com'
+    });
+
+    spyOn(service, 'createInscription')
+      .and.returnValue(of({}));
+
+    component.onSubmit();
+
+    expect(service.createInscription).toHaveBeenCalledWith(
+      jasmine.objectContaining({
+        firstName: 'John'
+      })
+    );
+  });
+});
+```
+
+### Backend Integration Test
+```java
+@SpringBootTest
+@AutoConfigureMockMvc
+public class InscriptionControllerTest {
+    
+    @Autowired
+    private MockMvc mockMvc;
+    
+    @MockBean
+    private InscriptionService service;
+    
+    @Test
+    public void testCreateInscription() throws Exception {
+        InscriptionDTO dto = new InscriptionDTO();
+        dto.setFirstName("John");
+        dto.setEmail("john@example.com");
+        
+        when(service.createInscription(any()))
+            .thenReturn(dto);
+        
+        mockMvc.perform(post("/api/inscriptions")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(objectMapper.writeValueAsString(dto)))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.firstName").value("John"));
+    }
+}
+```
+
+---
+
+**This guide provides deep technical understanding of how features work. Use it alongside JURY_PREPARATION_COURSE.md for comprehensive preparation!**
