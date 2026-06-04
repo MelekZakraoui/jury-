@@ -1,0 +1,861 @@
+# AmicaleStar - Design Patterns & Visual Examples
+
+## Design Pattern Reference
+
+### 1. Model-View-Controller (MVC) - Angular Implementation
+
+#### Without Best Practices (❌ Tightly Coupled)
+```typescript
+// BAD: Logic mixed in component
+@Component({
+  selector: 'app-bad-inscription',
+  template: `<div>{{ result }}</div>`
+})
+export class BadInscriptionComponent {
+  result: string;
+  
+  constructor(private http: HttpClient) {}
+  
+  register() {
+    // HTTP call directly in component
+    this.http.post('/api/inscriptions', data).subscribe(
+      response => {
+        this.result = response.message;
+        // Validation here
+        if (response.email) {
+          // Save to localStorage directly
+          localStorage.setItem('userData', JSON.stringify(response));
+        }
+      }
+    );
+  }
+}
+```
+
+**Problems**:
+- ❌ Hard to test (depends on HttpClient)
+- ❌ Replication of logic across components
+- ❌ Mixing concerns
+- ❌ Difficult to change API
+
+#### With Best Practices (✅ Clean Separation)
+```typescript
+// Service Layer - Handles all API logic
+@Injectable({ providedIn: 'root' })
+export class InscriptionService {
+  constructor(private http: HttpClient) {}
+  
+  register(data: InscriptionData): Observable<Registration> {
+    return this.http.post<Registration>('/api/inscriptions', data);
+  }
+}
+
+// Component Layer - Handles UI only
+@Component({
+  selector: 'app-inscription',
+  imports: [ReactiveFormsModule],
+  template: `<div>{{ result }}</div>`
+})
+export class InscriptionComponent {
+  result: string;
+  
+  constructor(private service: InscriptionService) {}
+  
+  register() {
+    this.service.register(data).subscribe(response => {
+      this.result = response.message;
+    });
+  }
+}
+```
+
+**Benefits**:
+- ✅ Easy to test (mock service)
+- ✅ Reusable across components
+- ✅ Clear separation of concerns
+- ✅ Single Responsibility Principle
+
+---
+
+### 2. Observer Pattern (RxJS in Angular)
+
+#### Event Subscription Pattern
+
+**Use Case**: Real-time notifications
+
+```
+┌─────────────────────────────────────────┐
+│         Event Source                    │
+│  (Database change, API call, timer)     │
+└──────────────┬──────────────────────────┘
+               │
+               ↓
+        ┌────────────────┐
+        │ Observable     │
+        │ (RxJS Subject) │
+        └────────┬───────┘
+                 │
+        ┌────────┴─────────┐
+        ↓                  ↓
+   ┌─────────┐        ┌─────────┐
+   │Component│        │Component│
+   │Subscribes       │Subscribes│
+   └────┬────┘        └────┬────┘
+        │                  │
+        ↓                  ↓
+   ┌─────────┐        ┌─────────┐
+   │Display  │        │Display  │
+   │Updates  │        │Updates  │
+   └─────────┘        └─────────┘
+```
+
+**Implementation**:
+```typescript
+// Service with Observable
+@Injectable({ providedIn: 'root' })
+export class NotificationService {
+  // Subject as event source
+  private notificationSubject = new Subject<Notification>();
+  
+  // Public Observable for consumers
+  notifications$ = this.notificationSubject.asObservable();
+  
+  // Publish event
+  notify(message: string) {
+    this.notificationSubject.next({ message, time: new Date() });
+  }
+}
+
+// Component 1: Subscribe and display
+@Component({
+  selector: 'app-notification-center',
+  imports: [AsyncPipe, NgFor],
+  template: `
+    <div *ngFor="let notif of notifications$ | async">
+      {{ notif.message }}
+    </div>
+  `
+})
+export class NotificationCenterComponent {
+  notifications$ = this.notificationService.notifications$;
+  
+  constructor(private notificationService: NotificationService) {}
+}
+
+// Component 2: Also subscribe (reuse same observable)
+@Component({
+  selector: 'app-notification-badge',
+  template: `<span>{{ (notifications$ | async)?.length }}</span>`
+})
+export class NotificationBadgeComponent {
+  notifications$ = this.notificationService.notifications$;
+  
+  constructor(private notificationService: NotificationService) {}
+}
+```
+
+**Benefits**:
+- ✅ Decoupled components
+- ✅ Real-time updates
+- ✅ Automatic cleanup with async pipe
+- ✅ Type-safe with generics
+
+---
+
+### 3. Decorator Pattern - Spring Security
+
+#### Without Decorators (❌ Scattered Authorization)
+```java
+// BAD: Authorization checks everywhere
+@RestController
+public class InscriptionController {
+  
+  @PostMapping("/api/inscriptions")
+  public ResponseEntity<Inscription> create(
+      @RequestBody InscriptionDTO dto,
+      HttpServletRequest request) {
+    
+    // Manual authorization check
+    String token = request.getHeader("Authorization");
+    if (!validateToken(token)) {
+      throw new UnauthorizedException();
+    }
+    
+    User user = extractUserFromToken(token);
+    if (!user.hasRole("BUREAU")) {
+      throw new ForbiddenException();
+    }
+    
+    // Finally, actual business logic
+    return service.create(dto);
+  }
+}
+```
+
+#### With Decorators (✅ Declarative)
+```java
+// GOOD: Decorators handle authorization
+@RestController
+@RequestMapping("/api/inscriptions")
+public class InscriptionController {
+  
+  @PostMapping
+  @PreAuthorize("hasRole('BUREAU')")  // ← Declarative!
+  public ResponseEntity<Inscription> create(
+      @Valid @RequestBody InscriptionDTO dto,
+      @AuthenticationPrincipal UserDetails user) {
+    
+    // Focus on business logic
+    return service.create(dto);
+  }
+  
+  @GetMapping("/{id}")
+  @PreAuthorize("hasRole('BUREAU') or @inscriptionService.isOwner(#id, #user)")
+  public ResponseEntity<Inscription> getById(
+      @PathVariable Long id,
+      @AuthenticationPrincipal UserDetails user) {
+    
+    return ResponseEntity.ok(service.findById(id));
+  }
+}
+```
+
+**Benefits**:
+- ✅ Cleaner code
+- ✅ Consistent authorization
+- ✅ Easier to understand intent
+- ✅ Less boilerplate
+
+---
+
+### 4. Data Transfer Object (DTO) Pattern
+
+#### The Problem
+
+```
+┌─────────────────────────────────────────┐
+│   Database Entity                       │
+│   ┌───────────────────────────────────┐ │
+│   │ - id (Long)                       │ │
+│   │ - firstName (String)              │ │
+│   │ - email (String)                  │ │
+│   │ - passwordHash (String) ⚠️ SECURE│ │
+│   │ - internalNotes (String) ⚠️ HIDE │ │
+│   │ - lastLogin (LocalDateTime)       │ │
+│   │ - ipAddress (String) ⚠️ HIDE     │ │
+│   └───────────────────────────────────┘ │
+└─────────────────────────────────────────┘
+          │
+          │ Serialize directly (BAD!)
+          │
+          ↓
+┌─────────────────────────────────────────┐
+│ API Response                            │
+│ {                                       │
+│   "id": 1,                              │
+│   "firstName": "John",                  │
+│   "email": "john@example.com",          │
+│   "passwordHash": "xj@#$%^..." ⚠️ LEAK│
+│   "internalNotes": "..." ⚠️ LEAK      │
+│   "lastLogin": "2026-05-21",            │
+│   "ipAddress": "192.168.1.1" ⚠️ LEAK   │
+│ }                                       │
+└─────────────────────────────────────────┘
+```
+
+#### The Solution
+
+```
+┌──────────────────┐
+│ Database Entity  │
+│ (Full data)      │
+└────────┬─────────┘
+         │
+         │ Transformation Layer
+         │
+         ↓
+┌──────────────────────────────┐
+│ DTO (Data Transfer Object)   │
+│ {                            │
+│   "id": 1,                   │
+│   "firstName": "John",       │
+│   "email": "john@...",       │
+│   "createdAt": "2026-05-21"  │
+│ }                            │
+│ ✅ SAFE TO EXPOSE            │
+└──────────────────────────────┘
+         │
+         │ JSON Serialization
+         │
+         ↓
+┌──────────────────────────────┐
+│ API Response                 │
+│ ✅ No sensitive data         │
+│ ✅ No internal details       │
+└──────────────────────────────┘
+```
+
+**Implementation**:
+```java
+// Entity - Database Model
+@Entity
+public class User {
+    private Long id;
+    private String firstName;
+    private String email;
+    private String passwordHash;      // ⚠️ Sensitive
+    private String internalNotes;     // ⚠️ Internal
+    private LocalDateTime lastLogin;
+}
+
+// DTO - API Contract
+public class UserDTO {
+    public Long id;
+    public String firstName;
+    public String email;
+    public LocalDateTime createdAt;
+    // passwordHash, internalNotes NOT included
+}
+
+// Service - Transformation
+@Service
+public class UserService {
+  
+  public UserDTO findById(Long id) {
+    User entity = userRepository.findById(id);
+    return mapToDTO(entity);  // ← Transform here
+  }
+  
+  private UserDTO mapToDTO(User entity) {
+    UserDTO dto = new UserDTO();
+    dto.id = entity.getId();
+    dto.firstName = entity.getFirstName();
+    dto.email = entity.getEmail();
+    dto.createdAt = entity.getCreatedAt();
+    // Sensitive fields not mapped
+    return dto;
+  }
+}
+
+// Controller - Public API
+@RestController
+@GetMapping("/users/{id}")
+public ResponseEntity<UserDTO> getUser(@PathVariable Long id) {
+  UserDTO dto = userService.findById(id);
+  return ResponseEntity.ok(dto);  // ← Secure
+}
+```
+
+**Benefits**:
+- ✅ Security: Hide sensitive fields
+- ✅ Flexibility: API independent of DB
+- ✅ Versioning: Different API versions easily
+- ✅ Performance: Send only needed fields
+
+---
+
+### 5. Dependency Injection Pattern
+
+#### Without DI (❌ Tight Coupling)
+```java
+// BAD: Creating dependencies directly
+public class InscriptionService {
+  private EmailService emailService;
+  private NotificationService notificationService;
+  private SmsService smsService;
+  
+  public InscriptionService() {
+    this.emailService = new EmailService();
+    this.notificationService = new NotificationService();
+    this.smsService = new SmsService();
+  }
+  
+  public void register(User user) {
+    // If EmailService changes, must modify here
+    emailService.send(user.getEmail(), "Welcome!");
+  }
+}
+```
+
+**Problems**:
+- ❌ Hard to test (real services created)
+- ❌ Can't swap implementations
+- ❌ Tight coupling
+- ❌ Hard to change dependencies
+
+#### With DI (✅ Loose Coupling)
+```java
+// GOOD: Dependencies injected
+@Service
+public class InscriptionService {
+  private final EmailService emailService;
+  private final NotificationService notificationService;
+  
+  // Constructor injection
+  @Autowired
+  public InscriptionService(
+      EmailService emailService,
+      NotificationService notificationService) {
+    this.emailService = emailService;
+    this.notificationService = notificationService;
+  }
+  
+  public void register(User user) {
+    emailService.send(user.getEmail(), "Welcome!");
+  }
+}
+
+// In test - Easy to mock
+@SpringBootTest
+public class InscriptionServiceTest {
+  
+  @Test
+  public void testRegister() {
+    // Mock dependencies
+    EmailService mockEmail = mock(EmailService.class);
+    NotificationService mockNotif = mock(NotificationService.class);
+    
+    // Inject mocks
+    InscriptionService service = 
+      new InscriptionService(mockEmail, mockNotif);
+    
+    // Test without real services
+    service.register(new User());
+    verify(mockEmail).send(...);
+  }
+}
+```
+
+**Benefits**:
+- ✅ Easy to test
+- ✅ Can swap implementations
+- ✅ Loose coupling
+- ✅ Better code organization
+
+---
+
+## Architecture Diagrams
+
+### 1. Three-Tier Architecture
+
+```
+┌──────────────────────────────────────────────────────┐
+│         PRESENTATION LAYER                           │
+│  (Angular Components, Forms, Routing)                │
+│  ├─ InscriptionComponent                             │
+│  ├─ SondageComponent                                 │
+│  └─ ActivityComponent                                │
+└────────────────┬─────────────────────────────────────┘
+                 │ REST API / HTTP
+                 │
+┌────────────────▼─────────────────────────────────────┐
+│         BUSINESS LOGIC LAYER                         │
+│  (Services, Validation, Transactions)                │
+│  ├─ InscriptionService                               │
+│  ├─ NotificationService                              │
+│  └─ SondageService                                   │
+└────────────────┬─────────────────────────────────────┘
+                 │ JPA / SQL
+                 │
+┌────────────────▼─────────────────────────────────────┐
+│         DATA ACCESS LAYER                            │
+│  (Repositories, JPA Queries)                         │
+│  ├─ InscriptionRepository                            │
+│  ├─ UserRepository                                   │
+│  └─ VoteRepository                                   │
+└────────────────┬─────────────────────────────────────┘
+                 │
+┌────────────────▼─────────────────────────────────────┐
+│         DATABASE LAYER                               │
+│  (PostgreSQL Tables)                                 │
+│  ├─ inscriptions table                               │
+│  ├─ users table                                      │
+│  └─ votes table                                      │
+└──────────────────────────────────────────────────────┘
+```
+
+### 2. Event-Driven Notification Flow
+
+```
+Event Sources:
+├─ New Registration
+├─ Status Change
+├─ Activity Created
+└─ Voting Started
+         │
+         │
+         ↓
+    ┌─────────────────┐
+    │ Event Publisher │
+    │ (Spring Events) │
+    └────────┬────────┘
+             │
+             │ Async Broadcast
+             │
+    ┌────────┴─────────┐
+    │                  │
+    ↓                  ↓
+┌──────────┐    ┌──────────────┐
+│ Email    │    │ WebSocket    │
+│Service   │    │ Broadcaster  │
+└────┬─────┘    └────┬─────────┘
+     │               │
+     ↓               ↓
+External         Connected
+Email            Clients
+Queue            (Real-time)
+```
+
+### 3. Authentication Flow
+
+```
+┌─────────────────────────────────────────────────────┐
+│ User enters credentials                              │
+└────────────┬────────────────────────────────────────┘
+             │
+             ↓
+┌─────────────────────────────────────────────────────┐
+│ POST /api/auth/login                                │
+│ { email, password }                                 │
+└────────────┬────────────────────────────────────────┘
+             │
+             ↓
+┌─────────────────────────────────────────────────────┐
+│ Backend Authentication Service                      │
+│ 1. Find user by email                               │
+│ 2. Hash password, compare                           │
+│ 3. Generate JWT token                               │
+└────────────┬────────────────────────────────────────┘
+             │
+             ↓
+┌─────────────────────────────────────────────────────┐
+│ Return JWT Token                                    │
+│ { accessToken, refreshToken }                       │
+└────────────┬────────────────────────────────────────┘
+             │
+             ↓
+┌─────────────────────────────────────────────────────┐
+│ Frontend stores JWT (localStorage)                  │
+└────────────┬────────────────────────────────────────┘
+             │
+             ↓
+┌─────────────────────────────────────────────────────┐
+│ Subsequent API calls include JWT                    │
+│ Authorization: Bearer <token>                       │
+└────────────┬────────────────────────────────────────┘
+             │
+             ↓
+┌─────────────────────────────────────────────────────┐
+│ Backend validates JWT:                              │
+│ 1. Check signature                                  │
+│ 2. Check expiration                                 │
+│ 3. Extract user info                                │
+└────────────┬────────────────────────────────────────┘
+             │
+             ↓
+┌─────────────────────────────────────────────────────┐
+│ Continue with request or return 401 Unauthorized    │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## Before & After: Common Anti-Patterns
+
+### Anti-Pattern 1: God Object
+
+#### ❌ Before
+```typescript
+// Component doing EVERYTHING
+export class UserComponent {
+  users: User[];
+  selectedUser: User;
+  filteredUsers: User[];
+  
+  constructor(private http: HttpClient) {}
+  
+  ngOnInit() {
+    this.http.get('/users').subscribe(data => {
+      this.users = data;
+      this.filter('active');
+    });
+  }
+  
+  filter(status: string) {
+    // Filtering logic here
+    this.filteredUsers = this.users.filter(...);
+  }
+  
+  updateUser() {
+    this.http.post('/users', this.selectedUser).subscribe(...);
+  }
+  
+  deleteUser(id: number) {
+    this.http.delete('/users/' + id).subscribe(...);
+  }
+  
+  exportToCSV() {
+    // CSV export logic
+  }
+  
+  // ... more and more methods
+}
+```
+
+#### ✅ After
+```typescript
+// Service handles logic
+@Injectable()
+export class UserService {
+  private userSubject = new Subject<User[]>();
+  users$ = this.userSubject.asObservable();
+  
+  constructor(private http: HttpClient) {}
+  
+  fetchUsers() {
+    this.http.get<User[]>('/users')
+      .subscribe(data => this.userSubject.next(data));
+  }
+  
+  updateUser(user: User) {
+    return this.http.post('/users', user);
+  }
+  
+  deleteUser(id: number) {
+    return this.http.delete(`/users/${id}`);
+  }
+}
+
+// Filter service
+@Injectable()
+export class UserFilterService {
+  filter(users: User[], status: string): User[] {
+    return users.filter(u => u.status === status);
+  }
+}
+
+// Export service
+@Injectable()
+export class UserExportService {
+  toCSV(users: User[]): string {
+    // CSV logic
+  }
+}
+
+// Component just displays
+@Component({
+  selector: 'app-users',
+  template: `<div *ngFor="let u of users$ | async">{{ u.name }}</div>`
+})
+export class UserComponent implements OnInit {
+  users$ = this.userService.users$;
+  
+  constructor(private userService: UserService) {}
+  
+  ngOnInit() {
+    this.userService.fetchUsers();
+  }
+}
+```
+
+### Anti-Pattern 2: Callback Hell (Nested Subscriptions)
+
+#### ❌ Before
+```typescript
+// Pyramid of doom
+this.userService.getUser(userId).subscribe(user => {
+  this.activityService.getActivities(user.id).subscribe(activities => {
+    this.notificationService.getNotifications(user.id).subscribe(notifs => {
+      this.data = {
+        user,
+        activities,
+        notifications: notifs
+      };
+    });
+  });
+});
+```
+
+#### ✅ After
+```typescript
+// Using RxJS operators
+this.userService.getUser(userId).pipe(
+  switchMap(user => 
+    this.activityService.getActivities(user.id).pipe(
+      map(activities => ({ user, activities }))
+    )
+  ),
+  switchMap(({ user, activities }) =>
+    this.notificationService.getNotifications(user.id).pipe(
+      map(notifs => ({ user, activities, notifs }))
+    )
+  ),
+  takeUntil(this.destroy$)
+).subscribe(data => {
+  this.data = data;
+});
+```
+
+#### Even Better: combineLatest
+```typescript
+// Parallel loading
+combineLatest([
+  this.userService.getUser(userId),
+  this.activityService.getActivities(userId),
+  this.notificationService.getNotifications(userId)
+]).pipe(
+  map(([user, activities, notifications]) => ({
+    user, activities, notifications
+  })),
+  takeUntil(this.destroy$)
+).subscribe(data => {
+  this.data = data;
+});
+```
+
+---
+
+## State Management Pattern
+
+### Simple State with BehaviorSubject
+
+```typescript
+@Injectable({ providedIn: 'root' })
+export class UserStateService {
+  
+  // Private state
+  private readonly usersSubject = new BehaviorSubject<User[]>([]);
+  private readonly loadingSubject = new BehaviorSubject<boolean>(false);
+  private readonly errorSubject = new BehaviorSubject<string | null>(null);
+  
+  // Public observables
+  users$ = this.usersSubject.asObservable();
+  loading$ = this.loadingSubject.asObservable();
+  error$ = this.errorSubject.asObservable();
+  
+  constructor(private http: HttpClient) {}
+  
+  // Actions
+  loadUsers() {
+    this.loadingSubject.next(true);
+    this.errorSubject.next(null);
+    
+    this.http.get<User[]>('/api/users')
+      .pipe(
+        tap(users => this.usersSubject.next(users)),
+        catchError(error => {
+          this.errorSubject.next(error.message);
+          throw error;
+        }),
+        finalize(() => this.loadingSubject.next(false))
+      )
+      .subscribe();
+  }
+  
+  addUser(user: User) {
+    return this.http.post<User>('/api/users', user)
+      .pipe(
+        tap(newUser => {
+          const current = this.usersSubject.value;
+          this.usersSubject.next([...current, newUser]);
+        })
+      );
+  }
+}
+
+// Component usage
+@Component({...})
+export class UserListComponent {
+  users$ = this.userState.users$;
+  loading$ = this.userState.loading$;
+  error$ = this.userState.error$;
+  
+  constructor(private userState: UserStateService) {}
+  
+  ngOnInit() {
+    this.userState.loadUsers();
+  }
+}
+```
+
+---
+
+## Error Handling Pattern
+
+### Comprehensive Error Handling
+
+```typescript
+// Global error handler
+@Injectable()
+export class ErrorInterceptor implements HttpInterceptor {
+  constructor(private notificationService: NotificationService) {}
+  
+  intercept(req: HttpRequest<any>, next: HttpHandler) {
+    return next.handle(req).pipe(
+      catchError(error => {
+        
+        if (error.status === 401) {
+          // Unauthorized - redirect to login
+          this.notificationService.show('Session expired', 'error');
+          // Redirect to login
+        }
+        
+        if (error.status === 403) {
+          // Forbidden
+          this.notificationService.show('Access denied', 'error');
+        }
+        
+        if (error.status === 404) {
+          // Not found
+          this.notificationService.show('Resource not found', 'error');
+        }
+        
+        if (error.status === 500) {
+          // Server error
+          this.notificationService.show(
+            'Server error. Please try again later',
+            'error'
+          );
+        }
+        
+        // Log error
+        console.error('HTTP Error:', error);
+        
+        return throwError(() => error);
+      })
+    );
+  }
+}
+
+// In services
+getUsers(): Observable<User[]> {
+  return this.http.get<User[]>('/api/users').pipe(
+    retry(1),  // Retry once
+    catchError(error => {
+      if (error.status === 404) {
+        // Provide default
+        return of([]);
+      }
+      throw error;
+    })
+  );
+}
+```
+
+---
+
+## This is Your Comprehensive Reference!
+
+Use these patterns to:
+1. **Explain design choices to jury**: "We used DI for testability"
+2. **Defend architecture**: "This pattern ensures loose coupling"
+3. **Show expertise**: Know why you chose each pattern
+4. **Demonstrate growth**: Explain evolution from anti-patterns
+
+---
+
+**Key Takeaway**: Every design decision should answer:
+- ✅ Why did we choose this?
+- ✅ What problems does it solve?
+- ✅ What alternatives did we consider?
+- ✅ What are the tradeoffs?
