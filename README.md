@@ -1,3 +1,1645 @@
+# AmicaleStar - Complete System Workflows
+
+## 🎯 Master Overview - How All Systems Connect
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   USER MANAGEMENT                           │
+│  Creates accounts, assigns roles, manages permissions       │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+        ┌────────┼────────┐
+        │        │        │
+        ↓        ↓        ↓
+    ADHERENT  BUREAU   ADMIN
+    (Member)  (Bureau) (System)
+        │        │        │
+        └────────┼────────┘
+                 │
+        ┌────────┴─────────────────┬──────────────────┐
+        │                          │                  │
+        ↓                          ↓                  ↓
+    REGISTRATION              ACTIVITY           ELECTION
+    MANAGEMENT                MANAGEMENT         MANAGEMENT
+    │                         │                  │
+    ├─ New registrations      ├─ Create activity ├─ Open nominations
+    ├─ Approve/Reject         ├─ Publish event   ├─ Members vote
+    └─ Send confirmations     └─ Update calendar └─ Count votes
+             │                         │                  │
+             └─────────────┬───────────┴──────────────────┘
+                           │
+                           ↓
+                   NOTIFICATION SYSTEM
+                   └─ Email notifications
+                   └─ WebSocket real-time
+                   └─ Database history
+```
+
+---
+
+## 1️⃣ USER MANAGEMENT WORKFLOW
+
+### Overview
+User management is the foundation. Everything else depends on it.
+
+### Complete Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│               NEW USER REGISTRATION (Adherent)              │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+         ┌────────▼────────┐
+         │ User signs up   │
+         │ (Frontend form) │
+         └────────┬────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ VALIDATION                                  │
+         │ ├─ Email format valid?                      │
+         │ ├─ Password strong (8+ chars)?              │
+         │ ├─ Email not already registered?            │
+         │ └─ University email? (optional constraint)  │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ CREATE USER ENTITY                          │
+         │ ├─ Generate ID                              │
+         │ ├─ Hash password (bcrypt)                   │
+         │ ├─ Set role: ADHERENT                       │
+         │ ├─ Set status: INACTIVE                     │
+         │ ├─ Save to database                         │
+         │ └─ Generate verification token              │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ PUBLISH EVENT: UserCreatedEvent              │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ EMAIL LISTENER: Send Verification Link      │
+         │ ├─ To: user@example.com                     │
+         │ ├─ Subject: "Verify Your Email"             │
+         │ ├─ Body: Click link to activate account     │
+         │ └─ Link: /auth/verify?token=xyz123          │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ USER VERIFIES EMAIL                         │
+         │ ├─ Clicks link in email                     │
+         │ ├─ Token validated                          │
+         │ ├─ Status changed: INACTIVE → ACTIVE        │
+         │ └─ Welcome email sent                       │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ USER CAN NOW LOGIN                          │
+         │ ├─ Email + Password                         │
+         │ ├─ Backend validates                        │
+         │ ├─ JWT token generated                      │
+         │ ├─ Token stored in localStorage             │
+         │ └─ Redirected to dashboard                  │
+         └─────────────────────────────────────────────┘
+```
+
+### User Types & Permissions
+
+```
+┌─────────────────────────────────────────────────────┐
+│  ADHERENT (Regular Member)                          │
+│  ├─ Can browse activities                           │
+│  ├─ Can register for activities                     │
+│  ├─ Can vote in elections                           │
+│  ├─ Cannot create activities                        │
+│  └─ Cannot manage users                             │
+│     Status: ACTIVE / SUSPENDED / BANNED             │
+└─────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────┐
+│  BUREAU (Board Member / Admin)                      │
+│  ├─ Can create activities                           │
+│  ├─ Can manage registrations                        │
+│  ├─ Can view dashboard & statistics                 │
+│  ├─ Can manage cotisations (fees)                   │
+│  ├─ Can create elections/surveys                    │
+│  └─ Cannot modify other bureau members              │
+│     Status: ACTIVE / SUSPENDED                      │
+└─────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────┐
+│  ADMIN (System Administrator)                       │
+│  ├─ Can do everything                               │
+│  ├─ Can create/delete bureau members                │
+│  ├─ Can view system logs                            │
+│  ├─ Can manage system settings                      │
+│  └─ Can suspend/ban users                           │
+│     Status: SUPER_ACTIVE / LOCKED                   │
+└─────────────────────────────────────────────────────┘
+```
+
+### Code Implementation
+
+```java
+// User Entity
+@Entity
+@Table(name = "users")
+public class User {
+    @Id @GeneratedValue
+    private Long id;
+    
+    @Column(unique = true)
+    private String email;
+    
+    private String firstName;
+    private String lastName;
+    
+    @JsonIgnore
+    private String passwordHash;  // Never send to frontend
+    
+    @Enumerated(EnumType.STRING)
+    private UserRole role;  // ADHERENT, BUREAU, ADMIN
+    
+    @Enumerated(EnumType.STRING)
+    private UserStatus status;  // ACTIVE, INACTIVE, SUSPENDED, BANNED
+    
+    private String verificationToken;
+    private LocalDateTime verificationTokenExpiry;
+    private LocalDateTime emailVerifiedAt;
+    
+    private String department;  // For bureau members
+    
+    @CreationTimestamp
+    private LocalDateTime createdAt;
+    
+    @UpdateTimestamp
+    private LocalDateTime updatedAt;
+}
+
+// User Service
+@Service
+@Transactional
+public class UserService {
+    
+    @Autowired
+    private UserRepository repository;
+    
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+    
+    @Autowired
+    private ApplicationEventPublisher eventPublisher;
+    
+    // Register new user
+    public UserDTO registerUser(RegisterRequest request) {
+        // Validate
+        if (repository.existsByEmail(request.getEmail())) {
+            throw new EmailAlreadyExistsException();
+        }
+        
+        // Create user
+        User user = new User();
+        user.setEmail(request.getEmail());
+        user.setFirstName(request.getFirstName());
+        user.setLastName(request.getLastName());
+        
+        // Hash password
+        user.setPasswordHash(
+            passwordEncoder.encode(request.getPassword())
+        );
+        
+        // Set defaults
+        user.setRole(UserRole.ADHERENT);
+        user.setStatus(UserStatus.INACTIVE);
+        
+        // Generate verification token (6 digit code)
+        String token = generateVerificationToken();
+        user.setVerificationToken(token);
+        user.setVerificationTokenExpiry(
+            LocalDateTime.now().plusHours(24)
+        );
+        
+        // Save
+        User saved = repository.save(user);
+        
+        // Publish event - triggers email
+        eventPublisher.publishEvent(
+            new UserCreatedEvent(saved)
+        );
+        
+        return mapToDTO(saved);
+    }
+    
+    // Verify email
+    public void verifyEmail(String token) {
+        User user = repository.findByVerificationToken(token)
+            .orElseThrow(() -> new InvalidTokenException());
+        
+        // Check expiry
+        if (user.getVerificationTokenExpiry().isBefore(LocalDateTime.now())) {
+            throw new TokenExpiredException();
+        }
+        
+        // Mark as verified
+        user.setStatus(UserStatus.ACTIVE);
+        user.setEmailVerifiedAt(LocalDateTime.now());
+        user.setVerificationToken(null);
+        
+        repository.save(user);
+        
+        // Publish event - triggers welcome email
+        eventPublisher.publishEvent(
+            new EmailVerifiedEvent(user)
+        );
+    }
+    
+    // Authenticate user
+    public AuthResponse authenticate(String email, String password) {
+        User user = repository.findByEmail(email)
+            .orElseThrow(() -> new UserNotFoundException());
+        
+        // Check if active
+        if (user.getStatus() != UserStatus.ACTIVE) {
+            throw new UserNotActivatedException();
+        }
+        
+        // Verify password
+        if (!passwordEncoder.matches(password, user.getPasswordHash())) {
+            // Log failed attempt (for security)
+            logFailedLogin(user);
+            throw new InvalidPasswordException();
+        }
+        
+        // Generate JWT tokens
+        String accessToken = jwtProvider.generateAccessToken(user);
+        String refreshToken = jwtProvider.generateRefreshToken(user);
+        
+        return new AuthResponse(accessToken, refreshToken);
+    }
+    
+    // Promote user to bureau member
+    public void promoteToBureau(Long userId, String department) {
+        User user = repository.findById(userId)
+            .orElseThrow(() -> new UserNotFoundException());
+        
+        user.setRole(UserRole.BUREAU);
+        user.setDepartment(department);
+        
+        repository.save(user);
+        
+        eventPublisher.publishEvent(
+            new UserPromotedEvent(user, department)
+        );
+    }
+    
+    // Suspend user
+    public void suspendUser(Long userId, String reason) {
+        User user = repository.findById(userId)
+            .orElseThrow();
+        
+        user.setStatus(UserStatus.SUSPENDED);
+        repository.save(user);
+        
+        eventPublisher.publishEvent(
+            new UserSuspendedEvent(user, reason)
+        );
+    }
+}
+```
+
+---
+
+## 2️⃣ REGISTRATION MANAGEMENT WORKFLOW
+
+### Overview
+Managing who joins the association. When a bureau member registers a new member.
+
+### Complete Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│          BUREAU MEMBER REGISTERS NEW ADHERENT               │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ FORM: New Member Registration               │
+         │ ├─ First Name                               │
+         │ ├─ Last Name                                │
+         │ ├─ Email                                    │
+         │ ├─ Phone                                    │
+         │ ├─ Join Date                                │
+         │ ├─ Department (optional)                    │
+         │ └─ Notes (optional)                         │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ FRONTEND VALIDATION                         │
+         │ ├─ Required fields present?                 │
+         │ ├─ Email format valid?                      │
+         │ ├─ Phone format valid?                      │
+         │ └─ Date in past/future?                     │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ BACKEND: InscriptionController               │
+         │ POST /api/inscriptions                       │
+         │ @PreAuthorize("hasRole('BUREAU')")          │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ STEP 1: VALIDATE                            │
+         │ ├─ Email not already registered?            │
+         │ ├─ Phone number unique?                     │
+         │ ├─ Join date reasonable?                    │
+         │ └─ Department exists?                       │
+         └────────┬────────────────────────────────────┘
+                  │ (if all valid)
+         ┌────────▼────────────────────────────────────┐
+         │ STEP 2: CREATE INSCRIPTION ENTITY           │
+         │ ├─ Generate ID                              │
+         │ ├─ Set status: PENDING                      │
+         │ ├─ Link to creator (bureau member)          │
+         │ ├─ Store registration data                  │
+         │ └─ Save to database                         │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ PUBLISH EVENT: InscriptionCreatedEvent      │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼───────────────┬────────────────────┐
+         │                        │                    │
+         ↓                        ↓                    ↓
+    LISTENER 1              LISTENER 2            LISTENER 3
+    Send Email to        Send Email to         Broadcast on
+    New Member          Bureau Members         WebSocket
+         │                    │                    │
+         ├─ Welcome msg       ├─ "New member      ├─ Real-time
+         ├─ Account details   │  registered"      │  notification
+         └─ Next steps        └─ Member details   └─ Update list
+         
+         ↓
+    ┌────────────────────────────────────────────┐
+    │ MEMBER ACTIVATES ACCOUNT                   │
+    │ ├─ Clicks link in email                    │
+    │ ├─ Creates password                        │
+    │ ├─ Verifies email                          │
+    │ └─ Status: PENDING → ACTIVE                │
+    └────────┬─────────────────────────────────────┘
+             │
+    ┌────────▼────────────────────────────────────┐
+    │ BUREAU CAN NOW APPROVE/REJECT               │
+    │ Option 1: APPROVE                           │
+    │   ├─ Final verification passed              │
+    │   ├─ Can now access platform                │
+    │   └─ Send: "Welcome to association!"        │
+    │                                             │
+    │ Option 2: REJECT                            │
+    │   ├─ Reason: Not eligible                   │
+    │   ├─ Account disabled                       │
+    │   └─ Send: "Unfortunately..."               │
+    └──────────────────────────────────────────────┘
+```
+
+### Inscription Statuses
+
+```
+PENDING      ← Initial state when registered
+    ↓
+AWAITING_APPROVAL ← Waiting for bureau decision
+    ├─ APPROVED ← Accepted! Member can now use platform
+    │   └─ ACTIVE ← Full member
+    │
+    ├─ REJECTED ← Not accepted
+    │   └─ INACTIVE ← Cannot access
+    │
+    └─ SUSPENDED ← Temporarily disabled
+```
+
+### Code Implementation
+
+```java
+// Inscription Entity
+@Entity
+@Table(name = "inscriptions")
+public class Inscription {
+    @Id @GeneratedValue
+    private Long id;
+    
+    @Column(unique = true)
+    private String email;
+    
+    private String firstName;
+    private String lastName;
+    private String phoneNumber;
+    private LocalDate joinDate;
+    
+    @ManyToOne
+    private User registeredBy;  // Which bureau member registered this
+    
+    @Enumerated(EnumType.STRING)
+    private InscriptionStatus status;  // PENDING, APPROVED, REJECTED, SUSPENDED
+    
+    private String rejectionReason;
+    private LocalDateTime approvalDate;
+    
+    @CreationTimestamp
+    private LocalDateTime createdAt;
+}
+
+enum InscriptionStatus {
+    PENDING,
+    AWAITING_APPROVAL,
+    APPROVED,
+    REJECTED,
+    SUSPENDED
+}
+
+// Inscription Service
+@Service
+@Transactional
+public class InscriptionService {
+    
+    @Autowired
+    private InscriptionRepository inscriptionRepository;
+    
+    @Autowired
+    private UserService userService;
+    
+    @Autowired
+    private ApplicationEventPublisher eventPublisher;
+    
+    @Autowired
+    private NotificationService notificationService;
+    
+    // Register new member
+    public InscriptionDTO registerMember(
+            CreateInscriptionRequest request,
+            User registeredBy) {
+        
+        // Validate
+        if (inscriptionRepository.existsByEmail(request.getEmail())) {
+            throw new EmailAlreadyRegisteredException();
+        }
+        
+        // Create inscription
+        Inscription inscription = new Inscription();
+        inscription.setEmail(request.getEmail());
+        inscription.setFirstName(request.getFirstName());
+        inscription.setLastName(request.getLastName());
+        inscription.setPhoneNumber(request.getPhoneNumber());
+        inscription.setJoinDate(request.getJoinDate());
+        inscription.setRegisteredBy(registeredBy);
+        inscription.setStatus(InscriptionStatus.PENDING);
+        
+        Inscription saved = inscriptionRepository.save(inscription);
+        
+        // Publish event
+        eventPublisher.publishEvent(
+            new InscriptionCreatedEvent(saved)
+        );
+        
+        return mapToDTO(saved);
+    }
+    
+    // Approve inscription (change status and create actual user)
+    public void approveInscription(Long inscriptionId) {
+        Inscription inscription = inscriptionRepository
+            .findById(inscriptionId)
+            .orElseThrow();
+        
+        // Create actual user account
+        User newUser = new User();
+        newUser.setEmail(inscription.getEmail());
+        newUser.setFirstName(inscription.getFirstName());
+        newUser.setLastName(inscription.getLastName());
+        newUser.setRole(UserRole.ADHERENT);
+        newUser.setStatus(UserStatus.ACTIVE);
+        newUser.setEmailVerifiedAt(LocalDateTime.now());
+        
+        // Save user (generates temporary password)
+        User savedUser = userService.createUser(newUser);
+        
+        // Update inscription status
+        inscription.setStatus(InscriptionStatus.APPROVED);
+        inscription.setApprovalDate(LocalDateTime.now());
+        inscriptionRepository.save(inscription);
+        
+        // Publish event - triggers welcome email with login credentials
+        eventPublisher.publishEvent(
+            new InscriptionApprovedEvent(inscription, savedUser)
+        );
+    }
+    
+    // Reject inscription
+    public void rejectInscription(Long inscriptionId, String reason) {
+        Inscription inscription = inscriptionRepository
+            .findById(inscriptionId)
+            .orElseThrow();
+        
+        inscription.setStatus(InscriptionStatus.REJECTED);
+        inscription.setRejectionReason(reason);
+        inscriptionRepository.save(inscription);
+        
+        // Publish event - triggers rejection email
+        eventPublisher.publishEvent(
+            new InscriptionRejectedEvent(inscription, reason)
+        );
+    }
+}
+
+// Events that trigger notifications
+public class InscriptionCreatedEvent extends ApplicationEvent {
+    private final Inscription inscription;
+    // → Sends email to new member
+}
+
+public class InscriptionApprovedEvent extends ApplicationEvent {
+    private final Inscription inscription;
+    private final User user;
+    // → Sends email with login credentials
+}
+
+public class InscriptionRejectedEvent extends ApplicationEvent {
+    private final Inscription inscription;
+    private final String reason;
+    // → Sends rejection email
+}
+```
+
+---
+
+## 3️⃣ ACTIVITY MANAGEMENT WORKFLOW
+
+### Overview
+Creating, publishing, and managing activities/events.
+
+### Complete Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│             BUREAU MEMBER CREATES ACTIVITY                  │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ FORM: Create New Activity                   │
+         │ ├─ Title                                    │
+         │ ├─ Description                              │
+         │ ├─ Location                                 │
+         │ ├─ Date & Time                              │
+         │ ├─ Duration                                 │
+         │ ├─ Capacity                                 │
+         │ ├─ Budget                                   │
+         │ ├─ Images                                   │
+         │ └─ Department                               │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ STEP 1: DEPARTMENT CHECK                    │
+         │ ├─ Get creator's department                │
+         │ ├─ Check if they can create activities     │
+         │ └─ Check budget permissions                 │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ STEP 2: VALIDATE DATA                       │
+         │ ├─ Date not in past                         │
+         │ ├─ Duration reasonable (1-24 hours)         │
+         │ ├─ Capacity positive                        │
+         │ ├─ No date conflicts                        │
+         │ └─ Budget within limits                     │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ STEP 3: CREATE ACTIVITY                     │
+         │ ├─ Generate ID                              │
+         │ ├─ Set status: DRAFT                        │
+         │ ├─ Save basic info                          │
+         │ └─ Get activity ID                          │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ STEP 4: UPLOAD IMAGES (ASYNC)               │
+         │ ├─ Validate image format                    │
+         │ ├─ Upload to cloud storage                  │
+         │ ├─ Generate thumbnails                      │
+         │ └─ Link to activity                         │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ STEP 5: PUBLISH ACTIVITY EVENT              │
+         │ └─ ActivityCreatedEvent                     │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼───────────────┬────────────────────┐
+         │                        │                    │
+         ↓                        ↓                    ↓
+    UPDATE CALENDAR          SEND EMAILS          WEBSOCKET
+    ├─ Mark date as busy     ├─ To creator:       ├─ Broadcast
+    ├─ Add to calendar       │  "Activity created" │  to all users
+    └─ Update all views      ├─ To bureau:        └─ Real-time
+                             │  "New activity"     update
+                             └─ To members (opt):
+                                "Event happening"
+         │
+         ↓
+    ┌────────────────────────────────────────────┐
+    │ RESPONSE TO FRONTEND                       │
+    │ 201 Created                                │
+    │ {                                          │
+    │   "id": 12345,                             │
+    │   "title": "...",                          │
+    │   "status": "PUBLISHED",                   │
+    │   "createdAt": "2026-06-15T10:00:00"      │
+    │ }                                          │
+    └────────┬─────────────────────────────────────┘
+             │
+    ┌────────▼────────────────────────────────────┐
+    │ ACTIVITY IS NOW LIVE                        │
+    │ ├─ Members can see it                       │
+    │ ├─ Members can register                     │
+    │ ├─ Bureau can manage it                     │
+    │ └─ Calendar shows the event                 │
+    └────────┬─────────────────────────────────────┘
+             │
+    ┌────────▼────────────────────────────────────┐
+    │ MEMBERS REGISTER FOR ACTIVITY               │
+    │ ├─ Click "Register"                         │
+    │ ├─ Check capacity                           │
+    │ ├─ If full → Show "Full"                    │
+    │ ├─ If spots available → Register            │
+    │ └─ Send confirmation email                  │
+    └────────┬─────────────────────────────────────┘
+             │
+    ┌────────▼────────────────────────────────────┐
+    │ BUREAU MANAGES ACTIVITY                     │
+    │ ├─ Edit details (before event)              │
+    │ ├─ Cancel activity (notifies all)           │
+    │ ├─ View registrations                       │
+    │ ├─ Approve/reject registrations             │
+    │ └─ Check attendance (during activity)       │
+    └──────────────────────────────────────────────┘
+```
+
+### Activity Statuses
+
+```
+DRAFT          ← Created but not yet published
+    ↓
+PUBLISHED      ← Live, members can see and register
+    ├─ Members registering
+    └─ Can be edited
+    
+CANCELLED      ← Cancelled before event
+    └─ All registrations cancelled
+    └─ Notifications sent
+    
+COMPLETED      ← Event happened
+    └─ Final attendance recorded
+    └─ Cannot be edited
+```
+
+### Code (Key Service Methods)
+
+```java
+@Service
+@Transactional
+public class ActivityService {
+    
+    public ActivityDTO createActivity(
+            CreateActivityDTO dto,
+            User creator) {
+        
+        // Validation (as shown in previous deep dive)
+        validateActivityData(dto);
+        validateDepartmentPermissions(creator, dto);
+        
+        // Create activity
+        Activity activity = new Activity();
+        activity.setTitle(dto.getTitle());
+        activity.setDescription(dto.getDescription());
+        activity.setActivityDate(dto.getActivityDate());
+        activity.setEndDate(dto.getEndDate());
+        activity.setCapacity(dto.getCapacity());
+        activity.setBudget(dto.getBudget());
+        activity.setCreatedBy(creator);
+        activity.setStatus(ActivityStatus.PUBLISHED);
+        
+        Activity saved = activityRepository.save(activity);
+        
+        // Publish event
+        eventPublisher.publishEvent(
+            new ActivityCreatedEvent(saved, creator)
+        );
+        
+        return mapToDTO(saved);
+    }
+    
+    // Member registers for activity
+    public RegistrationDTO registerForActivity(
+            Long activityId,
+            User member) {
+        
+        Activity activity = activityRepository.findById(activityId)
+            .orElseThrow();
+        
+        // Check if already registered
+        if (registrationRepository.existsByActivityAndUser(activity, member)) {
+            throw new AlreadyRegisteredException();
+        }
+        
+        // Check capacity
+        int registeredCount = registrationRepository.countByActivity(activity);
+        if (registeredCount >= activity.getCapacity()) {
+            throw new ActivityFullException();
+        }
+        
+        // Create registration
+        Registration registration = new Registration();
+        registration.setActivity(activity);
+        registration.setUser(member);
+        registration.setStatus(RegistrationStatus.CONFIRMED);
+        registration.setRegisteredAt(LocalDateTime.now());
+        
+        Registration saved = registrationRepository.save(registration);
+        
+        // Publish event
+        eventPublisher.publishEvent(
+            new MemberRegisteredEvent(activity, member)
+        );
+        
+        return mapToDTO(saved);
+    }
+    
+    // Cancel activity (notifies all registered members)
+    public void cancelActivity(Long activityId, String reason) {
+        Activity activity = activityRepository.findById(activityId)
+            .orElseThrow();
+        
+        // Get all registrations
+        List<Registration> registrations = 
+            registrationRepository.findByActivity(activity);
+        
+        // Update activity
+        activity.setStatus(ActivityStatus.CANCELLED);
+        activity.setCancellationReason(reason);
+        activityRepository.save(activity);
+        
+        // Publish event
+        eventPublisher.publishEvent(
+            new ActivityCancelledEvent(activity, registrations, reason)
+        );
+    }
+}
+```
+
+---
+
+## 4️⃣ ELECTION MANAGEMENT WORKFLOW
+
+### Overview
+Democratic processes: nominations, voting, results.
+
+### Complete Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│         BUREAU OPENS NOMINATION PERIOD                      │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ CREATE ELECTION                             │
+         │ ├─ Title: "Board Member Election 2026"     │
+         │ ├─ Description                              │
+         │ ├─ Positions: President, Treasurer, etc.   │
+         │ ├─ Nomination Start Date                    │
+         │ ├─ Nomination End Date                      │
+         │ ├─ Voting Start Date                        │
+         │ ├─ Voting End Date                          │
+         │ └─ Eligible voters: All members             │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ STATUS: NOMINATION_OPEN                     │
+         │ ├─ Members can nominate themselves          │
+         │ ├─ Members can nominate others              │
+         │ ├─ Nominations listed publicly              │
+         │ └─ Members can withdraw nomination          │
+         └────────┬────────────────────────────────────┘
+                  │ (After end date)
+         ┌────────▼────────────────────────────────────┐
+         │ NOMINATION PERIOD CLOSES                    │
+         │ ├─ No more nominations accepted             │
+         │ ├─ Verified nominated candidates            │
+         │ ├─ Final candidate list published           │
+         │ └─ Email sent: "Candidates announced"       │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼────────────────────────────────────┐
+         │ STATUS: VOTING_OPEN                         │
+         │ ├─ Ballot page published                    │
+         │ ├─ Members log in to vote                   │
+         │ ├─ One vote per position per member         │
+         │ ├─ Can change vote if not submitted         │
+         │ └─ Members can abstain                      │
+         └────────┬────────────────────────────────────┘
+                  │
+         ┌────────▼───────────────┬────────────────────┐
+         │                        │                    │
+         ↓                        ↓                    ↓
+    REAL-TIME              VOTE COUNT             AUDIT TRAIL
+    VOTE COUNTER           UPDATES                ├─ Who voted
+    └─ Show live           ├─ Tallies             ├─ When
+      vote counts          └─ Percentages         └─ Timestamp
+         │
+         ↓
+    ┌────────────────────────────────────────────┐
+    │ VOTING PERIOD ENDS                         │
+    │ ├─ Voting page closes                      │
+    │ ├─ No more votes accepted                  │
+    │ └─ Final tally calculated                  │
+    └────────┬─────────────────────────────────────┘
+             │
+    ┌────────▼────────────────────────────────────┐
+    │ RESULTS CALCULATED                          │
+    │ ├─ Total votes per candidate                │
+    │ ├─ Percentage per candidate                 │
+    │ ├─ Determine winners (simple majority)      │
+    │ ├─ Handle ties (special rules)              │
+    │ └─ Generate report                          │
+    └────────┬─────────────────────────────────────┘
+             │
+    ┌────────▼────────────────────────────────────┐
+    │ STATUS: CLOSED / RESULTS_PUBLISHED          │
+    │ ├─ Results displayed                        │
+    │ ├─ Winners announced                        │
+    │ ├─ Email to all members: "Results!"        │
+    │ ├─ Email to winners: "Congratulations!"    │
+    │ └─ Election report published                │
+    └────────┬─────────────────────────────────────┘
+             │
+    ┌────────▼────────────────────────────────────┐
+    │ ARCHIVE & AUDIT                             │
+    │ ├─ Store election results                   │
+    │ ├─ Store audit trail                        │
+    │ ├─ Cannot be edited                         │
+    │ └─ Historical record maintained             │
+    └──────────────────────────────────────────────┘
+```
+
+### Nomination Flow
+
+```
+Member Nominates Candidate
+    ├─ Self-nomination
+    │  ├─ Click "Run for President"
+    │  ├─ Enter motivation statement
+    │  └─ Confirm nomination
+    │
+    └─ Other nomination
+       ├─ Click "Nominate Someone"
+       ├─ Select candidate
+       ├─ Explain why they'd be good
+       └─ Candidate receives notification
+
+Candidate Can Accept/Decline
+    ├─ Accept
+    │  ├─ Appears on ballot
+    │  └─ Email sent: "You're nominated for President"
+    │
+    └─ Decline
+       ├─ Removed from ballot
+       └─ Email sent: "Thank you, but I decline"
+```
+
+### Voting Flow
+
+```
+Member Votes
+    ├─ Log in with credentials
+    ├─ See ballot with all positions
+    │  └─ President: [Candidate A] [Candidate B] [Abstain]
+    │  └─ Treasurer: [Candidate C] [Candidate D] [Abstain]
+    ├─ Select one per position
+    ├─ Can review before submitting
+    ├─ Click "Submit Vote"
+    └─ Cannot change after submission
+
+Voting recorded:
+    ├─ Stored encrypted in database
+    ├─ Linked to user (for audit)
+    ├─ Timestamp recorded
+    └─ Cannot be traced back (privacy)
+```
+
+### Code Implementation
+
+```java
+// Election Entity
+@Entity
+public class Election {
+    @Id @GeneratedValue
+    private Long id;
+    
+    private String title;  // "Board Election 2026"
+    private String description;
+    
+    @Enumerated(EnumType.STRING)
+    private ElectionStatus status;  // DRAFT, NOMINATION_OPEN, VOTING_OPEN, CLOSED
+    
+    private LocalDateTime nominationStartDate;
+    private LocalDateTime nominationEndDate;
+    private LocalDateTime votingStartDate;
+    private LocalDateTime votingEndDate;
+    
+    @OneToMany(mappedBy = "election")
+    private List<Position> positions;  // President, Treasurer, etc
+    
+    @OneToMany(mappedBy = "election")
+    private List<Nomination> nominations;
+    
+    @OneToMany(mappedBy = "election")
+    private List<Vote> votes;
+    
+    @CreationTimestamp
+    private LocalDateTime createdAt;
+}
+
+// Position in election
+@Entity
+public class Position {
+    @Id @GeneratedValue
+    private Long id;
+    
+    @ManyToOne
+    private Election election;
+    
+    private String title;  // "President", "Treasurer"
+    private Integer numberOfWinners;  // How many can win this position
+    private String description;
+}
+
+// Nomination
+@Entity
+public class Nomination {
+    @Id @GeneratedValue
+    private Long id;
+    
+    @ManyToOne
+    private Election election;
+    
+    @ManyToOne
+    private Position position;
+    
+    @ManyToOne
+    private User candidate;
+    
+    @ManyToOne
+    private User nominatedBy;
+    
+    @Enumerated(EnumType.STRING)
+    private NominationStatus status;  // PENDING, ACCEPTED, DECLINED
+    
+    private String motivation;  // Why we're nominating them
+    
+    @CreationTimestamp
+    private LocalDateTime createdAt;
+}
+
+// Vote
+@Entity
+public class Vote {
+    @Id @GeneratedValue
+    private Long id;
+    
+    @ManyToOne
+    private Election election;
+    
+    @ManyToOne
+    private User voter;
+    
+    @ManyToOne
+    private Position position;
+    
+    @ManyToOne
+    private User votedFor;  // Can be null (abstain)
+    
+    @CreationTimestamp
+    private LocalDateTime votedAt;
+    
+    // Encrypted for privacy
+    private String encryptedVoteData;
+}
+
+// Service
+@Service
+@Transactional
+public class ElectionService {
+    
+    // Open nominations
+    public void openNominations(Long electionId) {
+        Election election = electionRepository.findById(electionId).orElseThrow();
+        election.setStatus(ElectionStatus.NOMINATION_OPEN);
+        electionRepository.save(election);
+        
+        eventPublisher.publishEvent(
+            new NominationOpenedEvent(election)
+        );
+    }
+    
+    // Member nominates someone
+    public NominationDTO nominate(
+            Long electionId,
+            Long positionId,
+            Long candidateId,
+            String motivation,
+            User nominatedBy) {
+        
+        Election election = electionRepository.findById(electionId).orElseThrow();
+        
+        // Check if nomination period is open
+        LocalDateTime now = LocalDateTime.now();
+        if (now.isBefore(election.getNominationStartDate()) ||
+            now.isAfter(election.getNominationEndDate())) {
+            throw new NominationPeriodClosedException();
+        }
+        
+        // Check if candidate already nominated for this position
+        if (nominationRepository.existsByElectionAndPositionAndCandidate(
+                election, position, candidate)) {
+            throw new AlreadyNominatedException();
+        }
+        
+        Nomination nomination = new Nomination();
+        nomination.setElection(election);
+        nomination.setPosition(position);
+        nomination.setCandidate(candidate);
+        nomination.setNominatedBy(nominatedBy);
+        nomination.setMotivation(motivation);
+        nomination.setStatus(NominationStatus.PENDING);
+        
+        Nomination saved = nominationRepository.save(nomination);
+        
+        // Notify candidate
+        eventPublisher.publishEvent(
+            new CandidateNominatedEvent(saved)
+        );
+        
+        return mapToDTO(saved);
+    }
+    
+    // Record vote
+    public void recordVote(
+            Long electionId,
+            Long positionId,
+            Long candidateId,  // null means abstain
+            User voter) {
+        
+        Election election = electionRepository.findById(electionId).orElseThrow();
+        
+        // Check if voting is open
+        LocalDateTime now = LocalDateTime.now();
+        if (now.isBefore(election.getVotingStartDate()) ||
+            now.isAfter(election.getVotingEndDate())) {
+            throw new VotingPeriodClosedException();
+        }
+        
+        // Check if already voted for this position
+        if (voteRepository.existsByElectionAndPositionAndVoter(
+                election, position, voter)) {
+            throw new AlreadyVotedException();
+        }
+        
+        Vote vote = new Vote();
+        vote.setElection(election);
+        vote.setPosition(position);
+        vote.setVotedFor(candidateId == null ? null : 
+            userRepository.findById(candidateId).orElseThrow());
+        vote.setVoter(voter);
+        
+        voteRepository.save(vote);
+        
+        // Publish event for real-time counting
+        eventPublisher.publishEvent(
+            new VoteRecordedEvent(election, position)
+        );
+    }
+    
+    // Close voting and calculate results
+    public ElectionResultsDTO closeVotingAndCalculateResults(Long electionId) {
+        Election election = electionRepository.findById(electionId).orElseThrow();
+        election.setStatus(ElectionStatus.CLOSED);
+        electionRepository.save(election);
+        
+        // Calculate results for each position
+        ElectionResultsDTO results = new ElectionResultsDTO();
+        
+        for (Position position : election.getPositions()) {
+            // Count votes per candidate
+            Map<User, Long> voteCount = voteRepository
+                .findByElectionAndPosition(election, position)
+                .stream()
+                .filter(v -> v.getVotedFor() != null)  // Exclude abstain
+                .collect(Collectors.groupingByConcurrent(
+                    Vote::getVotedFor,
+                    Collectors.counting()
+                ));
+            
+            // Determine winners (simple majority)
+            List<User> winners = voteCount.entrySet().stream()
+                .filter(entry -> entry.getValue() == 
+                    voteCount.values().stream().max(Long::compareTo).orElse(0L))
+                .map(Map.Entry::getKey)
+                .limit(position.getNumberOfWinners())
+                .collect(Collectors.toList());
+            
+            results.addPositionResult(position, winners, voteCount);
+        }
+        
+        // Publish event
+        eventPublisher.publishEvent(
+            new ElectionResultsCalculatedEvent(election, results)
+        );
+        
+        return results;
+    }
+}
+```
+
+---
+
+## 5️⃣ NOTIFICATION SYSTEM (Orchestrating All Workflows)
+
+### Overview
+The glue that ties everything together. Events from all systems trigger notifications.
+
+### Complete Notification Flow
+
+```
+ANY EVENT OCCURS
+├─ User registered
+├─ Activity created
+├─ Member registered for activity
+├─ Election opened
+└─ Vote recorded
+         │
+         ↓
+┌─────────────────────────────────────┐
+│ EVENT PUBLISHED                     │
+│ (Spring ApplicationEvent)           │
+│ Contains: What happened & data      │
+└────────┬────────────────────────────┘
+         │
+    ┌────┴──────────────────────┐
+    ↓                           ↓
+LISTENER 1               LISTENER 2
+EMAIL HANDLER           WEBSOCKET HANDLER
+    │                         │
+    ├─ Get recipient email    ├─ Determine audience
+    ├─ Build email template   ├─ Create message
+    ├─ Send via SMTP          ├─ Broadcast via WebSocket
+    └─ Log (success/failure)   └─ Store in DB (optional)
+         │                         │
+         ↓                         ↓
+    ┌──────────────────────┐  ┌──────────────────────┐
+    │ SMTP Server          │  │ Connected Clients     │
+    │ (External)           │  │ (Browser tabs)        │
+    │                      │  │                       │
+    │ From: noreply@...    │  │ Real-time update      │
+    │ To: user@example.com │  │ Toast notification    │
+    │ Subject: ...         │  │ Badge update          │
+    │ Body: ...            │  │ Data refresh          │
+    └──────────────────────┘  └──────────────────────┘
+         │                         │
+         ↓                         ↓
+    User inbox              User browser
+    (Email app)             (Real-time)
+```
+
+### Email Notification Examples
+
+```
+EVENT: User Registered
+    └─ Email to user:
+       Subject: "Welcome to AmicaleStar!"
+       Body: "Your account has been created. 
+              Click link to verify email: [link]"
+
+EVENT: Registration Approved
+    └─ Email to member:
+       Subject: "Welcome to the Association!"
+       Body: "Your registration has been approved.
+              Log in with: email@example.com
+              Password: [temporary_password]
+              Please change password on first login."
+
+EVENT: Activity Created
+    └─ Email to bureau:
+       Subject: "New Activity: Team Building"
+       Body: "Date: 2026-06-15
+              Location: Main Hall
+              Capacity: 50
+              Budget: 500 TND"
+
+EVENT: Member Registered for Activity
+    └─ Email to member:
+       Subject: "Registration Confirmed"
+       Body: "You're registered for Team Building!
+              Date: 2026-06-15 at 14:00
+              Location: Main Hall"
+
+EVENT: Vote Recorded
+    └─ Email to voter (optional):
+       Subject: "Your Vote Recorded"
+       Body: "Thank you for voting!"
+```
+
+### Code
+
+```java
+// Base notification event
+public abstract class NotificationEvent extends ApplicationEvent {
+    protected final User recipient;
+    protected final String title;
+    protected final String message;
+    
+    public NotificationEvent(Object source, User recipient, 
+                            String title, String message) {
+        super(source);
+        this.recipient = recipient;
+        this.title = title;
+        this.message = message;
+    }
+}
+
+// Email listener
+@Component
+public class EmailNotificationListener {
+    
+    @Autowired
+    private JavaMailSender mailSender;
+    
+    @Autowired
+    private TemplateEngine templateEngine;
+    
+    @EventListener
+    @Async
+    public void onUserCreated(UserCreatedEvent event) {
+        User user = event.getUser();
+        
+        String subject = "Welcome to AmicaleStar!";
+        String templateName = "email/user-created";
+        
+        Map<String, Object> model = new HashMap<>();
+        model.put("firstName", user.getFirstName());
+        model.put("verifyLink", buildVerificationLink(user));
+        
+        sendEmail(user.getEmail(), subject, templateName, model);
+    }
+    
+    @EventListener
+    @Async
+    public void onInscriptionApproved(InscriptionApprovedEvent event) {
+        Inscription inscription = event.getInscription();
+        
+        String subject = "Welcome to the Association!";
+        String templateName = "email/inscription-approved";
+        
+        Map<String, Object> model = new HashMap<>();
+        model.put("firstName", inscription.getFirstName());
+        model.put("username", inscription.getEmail());
+        model.put("tempPassword", event.getTempPassword());
+        model.put("loginUrl", "https://amicalestar.tn/login");
+        
+        sendEmail(inscription.getEmail(), subject, templateName, model);
+    }
+    
+    @EventListener
+    @Async
+    public void onActivityCreated(ActivityCreatedEvent event) {
+        Activity activity = event.getActivity();
+        
+        // Send to creator
+        sendActivityCreatedEmail(event.getCreator(), activity);
+        
+        // Send to all bureau members
+        List<User> bureauMembers = userRepository.findByRole(UserRole.BUREAU);
+        bureauMembers.forEach(member -> 
+            sendActivityNotificationEmail(member, activity)
+        );
+    }
+    
+    // Send email method
+    private void sendEmail(String to, String subject, 
+                          String templateName, Map<String, Object> model) {
+        try {
+            // Build HTML content from template
+            String htmlContent = templateEngine.process(templateName, model);
+            
+            // Create message
+            SimpleMailMessage message = new SimpleMailMessage();
+            message.setTo(to);
+            message.setSubject(subject);
+            message.setFrom("noreply@amicalestar.tn");
+            message.setText(htmlContent);
+            
+            // Send
+            mailSender.send(message);
+            
+            // Log success
+            log.info("Email sent to: {}", to);
+            
+        } catch (Exception e) {
+            // Log failure but don't throw (don't block other operations)
+            log.error("Failed to send email to: " + to, e);
+            // Optional: Store in queue for retry
+            notificationQueueService.queueForRetry(to, subject);
+        }
+    }
+}
+
+// WebSocket listener for real-time notifications
+@Component
+public class WebSocketNotificationListener {
+    
+    @Autowired
+    private SimpMessagingTemplate messagingTemplate;
+    
+    @Autowired
+    private NotificationRepository notificationRepository;
+    
+    @EventListener
+    public void onAnyEvent(NotificationEvent event) {
+        User recipient = event.getRecipient();
+        
+        // Create notification object
+        Notification notification = new Notification();
+        notification.setUser(recipient);
+        notification.setTitle(event.getTitle());
+        notification.setMessage(event.getMessage());
+        notification.setRead(false);
+        notification.setCreatedAt(LocalDateTime.now());
+        
+        // Save to database
+        Notification saved = notificationRepository.save(notification);
+        
+        // Send to user via WebSocket
+        messagingTemplate.convertAndSendToUser(
+            recipient.getId().toString(),
+            "/queue/notifications",
+            new NotificationMessage(
+                saved.getId(),
+                saved.getTitle(),
+                saved.getMessage(),
+                saved.getCreatedAt()
+            )
+        );
+    }
+}
+
+// Frontend WebSocket subscription
+@Injectable()
+export class NotificationService {
+  private notificationSubject = new Subject<Notification>();
+  notifications$ = this.notificationSubject.asObservable();
+  
+  connect() {
+    const socket = new SockJS('/ws');
+    const stompClient = Stomp.over(socket);
+    
+    stompClient.connect({}, () => {
+      // Subscribe to personal notifications
+      stompClient.subscribe(
+        '/user/queue/notifications',
+        (message) => {
+          const notification = JSON.parse(message.body);
+          this.notificationSubject.next(notification);
+          
+          // Show toast
+          this.toastr.show(notification.title, notification.message);
+        }
+      );
+    });
+  }
+}
+```
+
+---
+
+## 🔗 How All Systems Work Together
+
+### Example Scenario: End-to-End Flow
+
+```
+SCENARIO: Bureau member registers new student, who votes in election
+
+TIME 1: Bureau registers student
+    │
+    ├─ InscriptionController.registerMember()
+    │
+    ├─ InscriptionService.createInscription()
+    │   └─ Save to DB
+    │
+    ├─ Publish: InscriptionCreatedEvent
+    │   │
+    │   ├─ Email Listener
+    │   │   └─ Send confirmation email to new member
+    │   │
+    │   └─ WebSocket Listener
+    │       └─ Broadcast to bureau: "New member registered"
+    │
+    └─ Response: 201 Created
+
+TIME 2: Bureau approves registration
+    │
+    ├─ InscriptionService.approveInscription()
+    │
+    ├─ Create User account
+    │
+    ├─ Publish: InscriptionApprovedEvent
+    │   │
+    │   ├─ Email Listener
+    │   │   └─ Send login credentials
+    │   │
+    │   ├─ User Management updated
+    │   │   └─ New ADHERENT user created
+    │   │
+    │   └─ WebSocket Listener
+    │       └─ Notify member: "You're approved!"
+    │
+    └─ Response: 200 OK
+
+TIME 3: Election starts
+    │
+    ├─ ElectionService.openVoting()
+    │
+    ├─ Publish: VotingOpenedEvent
+    │   │
+    │   ├─ Email Listener
+    │   │   └─ Send voting link to all members
+    │   │
+    │   ├─ Activity Management (optional)
+    │   │   └─ Create "Election Voting" activity
+    │   │
+    │   └─ WebSocket Listener
+    │       └─ Show voting banner for all
+    │
+    └─ New member sees: "Vote now!"
+
+TIME 4: New member votes
+    │
+    ├─ ElectionService.recordVote()
+    │
+    ├─ Publish: VoteRecordedEvent
+    │   │
+    │   ├─ Real-time Vote Counter
+    │   │   └─ Update live vote tally
+    │   │
+    │   ├─ Email Listener (optional)
+    │   │   └─ Send: "Thank you for voting"
+    │   │
+    │   └─ WebSocket Listener
+    │       └─ Update vote count in real-time
+    │
+    └─ Response: 201 Created
+
+TIME 5: Election closes
+    │
+    ├─ ElectionService.closeVotingAndCalculateResults()
+    │
+    ├─ Publish: ElectionResultsCalculatedEvent
+    │   │
+    │   ├─ Email Listener
+    │   │   ├─ Send results to all members
+    │   │   └─ Congratulations email to winners
+    │   │
+    │   ├─ Archive (Audit)
+    │   │   └─ Store permanent record
+    │   │
+    │   └─ WebSocket Listener
+    │       └─ Show results page to all
+    │
+    └─ Response: Results published
+
+THROUGHOUT: Database maintains audit trail
+    └─ Logs every action, timestamp, user
+```
+
+---
+
+## 📊 Database Relationships
+
+```
+USER (accounts)
+├─ One-to-Many: INSCRIPTION (registrations)
+├─ One-to-Many: ACTIVITY (created by)
+├─ One-to-Many: REGISTRATION (member registrations)
+├─ One-to-Many: NOMINATION (nominated)
+├─ One-to-Many: VOTE (voted)
+└─ One-to-Many: NOTIFICATION (received)
+
+INSCRIPTION (registrations)
+├─ Many-to-One: USER (registered by bureau member)
+└─ Becomes: USER account (when approved)
+
+ACTIVITY
+├─ Many-to-One: USER (created by)
+├─ One-to-Many: ACTIVITY_IMAGE (images)
+├─ One-to-Many: REGISTRATION (member registrations)
+└─ One-to-Many: ACTIVITY_COMMENT (comments)
+
+ELECTION
+├─ One-to-Many: POSITION (roles being elected)
+├─ One-to-Many: NOMINATION (candidacies)
+└─ One-to-Many: VOTE (votes cast)
+
+NOTIFICATION
+├─ Many-to-One: USER (recipient)
+├─ String: title, message
+└─ Boolean: isRead
+```
+
+---
+
+## 🎯 Key Design Principles Across All Workflows
+
+| Principle | Why | How It's Applied |
+|-----------|-----|------------------|
+| **Event-Driven** | Loose coupling | Every action publishes event |
+| **Async Processing** | Better UX | Emails sent in background |
+| **Multi-Layer Validation** | Security | Frontend + Backend checks |
+| **Transaction Management** | Data integrity | ACID operations |
+| **Real-time Updates** | User experience | WebSocket notifications |
+| **Audit Trail** | Accountability | All actions logged |
+| **Graceful Degradation** | Resilience | If email fails, activity succeeds |
+| **SOLID Principles** | Maintainability | Single responsibility per service |
+
+---
+
+## 💡 Talking Points for Jury
+
+✅ **"All these workflows are connected through an event-driven architecture"**
+   - When something happens in one module, events trigger actions in others
+   - Services don't know about each other directly
+
+✅ **"We validate at multiple layers"**
+   - Frontend (immediate feedback)
+   - Backend (security, business rules)
+   - Database (constraints)
+
+✅ **"Everything is asynchronous where it matters"**
+   - Email sending doesn't block response
+   - Image uploading happens in background
+   - User gets immediate feedback
+
+✅ **"Real-time updates via WebSocket"**
+   - Vote counts update live
+   - Notifications appear instantly
+   - Calendar updates without page refresh
+
+✅ **"Atomic transactions ensure consistency"**
+   - If registration fails, no partial data
+   - All-or-nothing approach
+   - Rollback on error
+
+✅ **"Comprehensive audit trail"**
+   - Every action logged
+   - Who did what and when
+   - Important for accountability
+
+---
+
+## 📝 Summary
+
+These five interconnected workflows (User Management, Registration, Activity, Election, Notification) demonstrate:
+
+1. **Full-stack knowledge** - Frontend to database
+2. **Event-driven architecture** - Services loosely coupled
+3. **Best practices** - Validation, async, transactions
+4. **Real-time capability** - WebSocket, live updates
+5. **Scalability** - Independent services can scale
+6. **User experience** - Immediate feedback, notifications
+7. **Security** - Multi-layer protection, audit trail
+8. **Reliability** - Graceful failures, resilience
+
+Perfect talking points for your jury! 🎯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # AMICALE-STAR Platform - Complete Architecture & Technical Documentation
 
 ## Table of Contents
